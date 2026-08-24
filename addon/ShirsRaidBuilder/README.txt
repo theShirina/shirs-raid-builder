@@ -1,4 +1,4 @@
-Shir's Raid Builder 0.65
+Shir's Raid Builder 0.66
 
 Built for Microbot WoW 1.12.
 

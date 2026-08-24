@@ -406,6 +406,7 @@ local function CloseChoiceMenu()
     if choiceMenu then choiceMenu:Hide() end
     choiceOwner = nil
 end
+C.CloseChoiceMenu = CloseChoiceMenu
 
 local function SelectButton(parent, options, current, width, x, y, onChange)
     local button = CreateFrame("Button", nil, parent)
@@ -1724,6 +1725,7 @@ local function OpenSetup()
 end
 
 local function HideLegacyNameSuggestions()
+    C.HideLegacyNameSuggestions = HideLegacyNameSuggestions
     if legacyNameMenu then legacyNameMenu:Hide() end
     for i = 1, table.getn(legacyNameRows) do
         legacyNameRows[i]:Hide()
@@ -1811,7 +1813,15 @@ local function RefreshNormalHireOptions(frame)
 end
 
 local function AddEntryEditor(kind)
-    local frame = kind == "normal" and addNormalFrame or addLegacyFrame
+    -- A dropdown left open on another hire panel is mouse-enabled at TOOLTIP
+    -- strata; if it survives, it swallows every click on this panel.
+    if C.CloseChoiceMenu then C.CloseChoiceMenu() end
+    if C.HideAbilitySuggestions then C.HideAbilitySuggestions() end
+    if C.HideLegacyNameSuggestions then C.HideLegacyNameSuggestions() end
+    -- Pick the panel for this kind directly; `x and a or b` hands back the
+    -- legacy frame whenever the normal panel has not been created yet.
+    local frame
+    if kind == "normal" then frame = addNormalFrame else frame = addLegacyFrame end
     if not frame then
         frame=CreateFrame("Frame",kind=="normal" and "ShirsRaidBuilderAddNormal" or "ShirsRaidBuilderAddLegacy",UIParent); frame:SetWidth(kind=="normal" and 568 or 440); frame:SetHeight(kind=="normal" and 176 or 210); StylePanelFrame(frame); frame:SetPoint("CENTER",UIParent,"CENTER",0,0)
         local title=frame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOP",frame,"TOP",0,-12); title:SetText(kind=="normal" and "Add normal hire" or "Add legacy hire")

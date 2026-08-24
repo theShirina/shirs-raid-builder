@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.66
+
+### Fixed
+
+- The Add Normal button opens its hire panel again after Add Legacy has been opened first in the same session
+
 ## 0.65
 
 ### Added
