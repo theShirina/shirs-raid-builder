@@ -217,6 +217,44 @@ assert(assembled[5].phase == "legacy-setup" and assembled[5].target == "Longnam-
 assert(assembled[6].phase == "legacy-custom" and assembled[6].target == "Longnam-lite")
 assert(table.getn(assembled) == 6)
 
+-- Legacy board members must join group-command candidates even when the server
+-- companion list has no record for them (GRINFO lists hired companions only).
+local legacyOnlyBoard = C.PadRaidSlots({
+    {kind="legacy", charName="Longname", class="priest", role="rdps"},
+    {kind="legacy", charName="Healalt", class="priest", role="healer"},
+}, 8)
+local legacyOnlyNames = C.LegacyNameSet(legacyOnlyBoard)
+local legacyCandidates = C.AppendLegacyGroupMembers({}, legacyOnlyBoard, legacyOnlyNames)
+assert(table.getn(legacyCandidates) == 2)
+assert(legacyCandidates[1].name == "Longnam-lite" and legacyCandidates[1].class == "priest" and legacyCandidates[1].role == "rdps")
+assert(legacyCandidates[2].name == "Healalt-lite" and legacyCandidates[2].class == "priest" and legacyCandidates[2].role == "healer")
+local shacklePlan = C.BuildGroupDenyPlan({{role="all", class="priest", abilities={"Shackle Undead"}}})
+local shadowTargets = C.ExpandRoleDenies(shacklePlan, legacyCandidates)
+assert(table.getn(shadowTargets) == 2)
+assert(shadowTargets[1].target == "Longnam-lite" and shadowTargets[1].command == "deny add Shackle Undead")
+assert(shadowTargets[2].target == "Healalt-lite")
+-- Companion records stay first; legacy members only fill gaps.
+local filledGap = C.AppendLegacyGroupMembers({{name="Holyone", class="priest", role="healer"}}, legacyOnlyBoard, {["Longnam-lite"]=true, ["Healalt-lite"]=true})
+assert(table.getn(filledGap) == 3)
+assert(filledGap[1].name == "Holyone" and filledGap[2].name == "Longnam-lite" and filledGap[3].name == "Healalt-lite")
+-- Same-name duplicates collapse on the whisper name.
+local dupeGap = C.AppendLegacyGroupMembers({{name="Longnam-lite", class="priest", role="healer"}}, legacyOnlyBoard, legacyOnlyNames)
+assert(table.getn(dupeGap) == 2)
+-- Absent characters never become targets.
+local awayNames = {["Healalt-lite"]=true}
+local absentGap = C.AppendLegacyGroupMembers({}, legacyOnlyBoard, awayNames)
+assert(table.getn(absentGap) == 1 and absentGap[1].name == "Healalt-lite")
+-- Non-legacy rows never leak into the candidate pool.
+local mixedBoard = C.PadRaidSlots({
+    {kind="normal", account="Someacct", class="mage", role="rdps"},
+    {kind="player", charName="Shir", class="warrior", role="tank"},
+    {kind="guest", companionName="Guestone", account="Shir", class="warrior", role="tank"},
+    {kind="legacy", charName="Warlocka", class="warlock", role="rdps"},
+}, 8)
+local mixedGap = C.AppendLegacyGroupMembers({}, mixedBoard, {["Warlock-lite"]=true, ["Guestone"]=true, ["Someacc-lite"]=true})
+assert(table.getn(mixedGap) == 1)
+assert(mixedGap[1].name == "Warlock-lite" and mixedGap[1].class == "warlock")
+
 assert(C.IsHireCommand({kind="normal"}))
 assert(C.IsHireCommand({kind="hire"}))
 assert(not C.IsHireCommand({kind="deny", chatType="WHISPER", target="Bolt"}))

@@ -70,5 +70,6 @@ assert(string.find(denyRemoveBody, "all[ri]==rule", 1, true), "deny Remove must 
 assert(string.find(denyRemoveBody, "table.remove(all,ri)", 1, true), "deny Remove must delete only its own rule")
 assert(string.find(denyRemoveBody, "C.ResetDenyRuleEditor()", 1, true), "removing a deny rule must immediately enter fresh-rule mode")
 assert(string.find(source, 'MakeButton(settingsFrame,"New",64,18,14,C.ResetDenyRuleEditor,true)', 1, true), "New and Remove must use the same deny editor reset")
+assert(string.find(source, "C.AppendLegacyGroupMembers(C.KeepPresentCompanions(executeCompanionList, present), EnsureDB().entries, present)", 1, true), "group commands must include legacy board members the server companion list omits")
 
 print("Shir's Raid Builder mode contract tests: PASS")

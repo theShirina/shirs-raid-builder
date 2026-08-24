@@ -439,6 +439,40 @@ function C.KeepPresentCompanions(companions, present)
     return result
 end
 
+-- GRINFO lists hired companions only. Legacy board characters never appear in
+-- it, so group commands must add them from the preset itself. Only members the
+-- live group still shows (their whisper name sits in presentSet) are appended,
+-- after every server record, so companions keep their head-start ordering.
+function C.AppendLegacyGroupMembers(companions, entries, presentSet)
+    local result = {}
+    local seen = {}
+    local i
+    if type(companions) == "table" then
+        for i = 1, table.getn(companions) do
+            local companion = companions[i]
+            if type(companion) == "table" and companion.name and C.Trim(companion.name) ~= "" then
+                table.insert(result, companion)
+                seen[string.lower(C.Trim(companion.name))] = true
+            end
+        end
+    end
+    if type(entries) ~= "table" or type(presentSet) ~= "table" then return result end
+    for i = 1, table.getn(entries) do
+        local entry = entries[i]
+        if type(entry) == "table" and entry.kind == "legacy" then
+            local name = C.GetLegacyWhisperName(entry)
+            if name ~= "" and presentSet[name] and not seen[string.lower(name)] then
+                table.insert(result, {
+                    name = name,
+                    class = C.NormalizeClassLabel(entry.class or ""),
+                    role = C.NormalizeRoleLabel(entry.role or ""),
+                })
+            end
+        end
+    end
+    return result
+end
+
 function C.ExpandRoleDenies(denies, companions, leftoverSet)
     local result = {}
     local leftover = {}

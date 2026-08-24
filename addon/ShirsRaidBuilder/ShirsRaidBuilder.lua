@@ -1983,8 +1983,8 @@ local function ExpandPendingGroupDenies()
         local me = UnitName("player")
         if me then present[me] = nil end
     end
-    local live = C.KeepPresentCompanions(executeCompanionList, present)
     local leftoverSet = C.LegacyNameSet(EnsureDB().entries)
+    local live = C.AppendLegacyGroupMembers(C.KeepPresentCompanions(executeCompanionList, present), EnsureDB().entries, present)
     local denyPending = {}
     local setupPending = {}
     for i = 1, table.getn(pending) do
