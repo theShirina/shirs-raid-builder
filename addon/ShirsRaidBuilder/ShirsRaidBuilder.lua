@@ -1,4 +1,4 @@
--- Shir's Raid Builder 0.61
+-- Shir's Raid Builder 0.62
 -- Independent clean-room implementation.
 
 local C = ShirsRaidBuilderCore
@@ -12,6 +12,7 @@ local function BindAccountDB()
     if type(DB.knownCharacters) ~= "table" then DB.knownCharacters = {} end
     if type(DB.characterLevels) ~= "table" then DB.characterLevels = {} end
     if type(DB.characterFactions) ~= "table" then DB.characterFactions = {} end
+    if type(DB.characterRoles) ~= "table" then DB.characterRoles = {} end
     if type(DB.inviteCharacters) ~= "table" then DB.inviteCharacters = {} end
     if pending ~= DB and type(pending) == "table" then
         if type(pending.presets) == "table" then
@@ -26,12 +27,15 @@ local function BindAccountDB()
         if type(pending.characterLevels) == "table" then
             for name, level in pairs(pending.characterLevels) do DB.characterLevels[name] = level end
         end
+        if type(pending.characterRoles) == "table" then
+            for name, role in pairs(pending.characterRoles) do DB.characterRoles[name] = role end
+        end
     end
     return true
 end
 
 local ROLES = { "tank", "healer", "rdps", "mdps" }
-local ROLE_LABELS = { tank="Tank", healer="Healer", rdps="Ranged DPS", mdps="Melee DPS" }
+local ROLE_LABELS = { all="All Roles", tank="Tank", healer="Healer", rdps="Ranged DPS", mdps="Melee DPS" }
 local CLASS_LABELS = {
     warrior="Warrior", mage="Mage", warlock="Warlock", priest="Priest",
     druid="Druid", paladin="Paladin", shaman="Shaman", hunter="Hunter", rogue="Rogue",
@@ -108,13 +112,13 @@ local executeFrames = 0
 local executeWaitStarted = 0
 local HIRE_DELAY_MIN = 7.5
 local HIRE_DELAY_MAX = 8.5
-local NOD_TIMEOUT_FRAMES = 180
-local WHISPER_GAP_FRAMES = 42
+local NOD_TIMEOUT_SECONDS = 3.0
+local WHISPER_GAP_SECONDS = 0.7
 local executeHireReadyAt = 0
 local executeWaitingNod = false
 local executeNodReady = false
 local executeNodName = ""
-local executeNodFrames = 0
+local executeNodStarted = 0
 local executeWhisperGap = 0
 local executeElapsed = 0
 local executePartyBefore = nil
@@ -156,6 +160,7 @@ local function EnsureDB()
     if type(DB.knownCharacters) ~= "table" then DB.knownCharacters = {} end
     if type(DB.characterLevels) ~= "table" then DB.characterLevels = {} end
     if type(DB.characterFactions) ~= "table" then DB.characterFactions = {} end
+    if type(DB.characterRoles) ~= "table" then DB.characterRoles = {} end
     if type(DB.inviteCharacters) ~= "table" then DB.inviteCharacters = {} end
     if type(DB.captureWarningHidden) ~= "table" then DB.captureWarningHidden = {} end
     local known = {}
@@ -167,6 +172,7 @@ local function EnsureDB()
         local moved = C.RescueHirePreset(DB)
         if moved then C.rescueNote = moved end
     end
+    C.MigrateCharacterRoles(DB.characterRoles, DB.presets, DB.currentPreset)
     local preset = C.ActivePreset(DB, DB.uiMode)
     if type(preset.entries) ~= "table" then preset.entries = {} end
     if type(preset.denyRules) ~= "table" then preset.denyRules = {} end
@@ -370,9 +376,13 @@ local function ClassesForRole(role, faction)
     for i = 1, table.getn(CLASSES) do
         local class = CLASSES[i]
         if C.ClassAllowedForFaction(class, faction) then
-            local allowed = CLASS_ROLES[class] or ROLES
-            for ri = 1, table.getn(allowed) do
-                if allowed[ri] == role then table.insert(result, CLASS_LABELS[class] or class); break end
+            if role == "all" then
+                table.insert(result, CLASS_LABELS[class] or class)
+            else
+                local allowed = CLASS_ROLES[class] or ROLES
+                for ri = 1, table.getn(allowed) do
+                    if allowed[ri] == role then table.insert(result, CLASS_LABELS[class] or class); break end
+                end
             end
         end
     end
@@ -390,6 +400,7 @@ local function SpecsForClassRole(class, role)
 end
 
 local function RoleValue(display)
+    if display == "All Roles" then return "all" end
     if display == "Melee DPS" then return "mdps" end
     if display == "Ranged DPS" then return "rdps" end
     return string.lower(display or "mdps")
@@ -613,21 +624,18 @@ local function RenderEntry(index, entry, y, spawnNumber, x)
     if name == "" then name = "?" end
     local classKey = entry.class or "warrior"
     local color = CLASS_COLORS[classKey] or {0.85,0.88,0.95}
-    local num = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    num:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -3)
-    num:SetText(tostring(spawnNumber))
-    num:SetTextColor(0.95, 0.96, 1.0)
     local line1 = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    line1:SetPoint("TOPLEFT", row, "TOPLEFT", 14, -3)
+    line1:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -3)
     line1:SetPoint("TOPRIGHT", row, "TOPRIGHT", -18, -3)
     line1:SetHeight(10)
     line1:SetJustifyH("LEFT")
     if line1.SetNonSpaceWrap then line1:SetNonSpaceWrap(false) end
-    line1:SetText(name)
+    line1:SetText(tostring(spawnNumber) .. " " .. name)
     line1:SetTextColor(0.95, 0.96, 1.0)
     local line2 = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    line2:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -15); line2:SetWidth(78); line2:SetJustifyH("LEFT")
-    line2:SetText((CLASS_LABELS[classKey] or classKey) .. "  " .. (ROLE_SHORT[entry.role] or entry.role or ""))
+    line2:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -15); line2:SetWidth(78); line2:SetHeight(10); line2:SetJustifyH("LEFT")
+    if line2.SetNonSpaceWrap then line2:SetNonSpaceWrap(false) end
+    line2:SetText((CLASS_LABELS[classKey] or classKey) .. " " .. (ROLE_SHORT[entry.role] or entry.role or ""))
     line2:SetTextColor(color[1], color[2], color[3])
     row:SetScript("OnMouseUp", function()
         if arg1 == "RightButton" then
@@ -676,24 +684,21 @@ local function RenderEntry(index, entry, y, spawnNumber, x)
             dragGhost:SetToplevel(true)
             dragGhost:EnableMouse(false)
             dragGhost:SetBackdrop(DROP_BG)
-            dragGhost.num = dragGhost:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            dragGhost.num:SetPoint("TOPLEFT", dragGhost, "TOPLEFT", 3, -3)
             dragGhost.line1 = dragGhost:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            dragGhost.line1:SetPoint("TOPLEFT", dragGhost, "TOPLEFT", 14, -3)
+            dragGhost.line1:SetPoint("TOPLEFT", dragGhost, "TOPLEFT", 3, -3)
             dragGhost.line1:SetPoint("TOPRIGHT", dragGhost, "TOPRIGHT", -4, -3)
             dragGhost.line1:SetHeight(10)
             dragGhost.line1:SetJustifyH("LEFT")
             if dragGhost.line1.SetNonSpaceWrap then dragGhost.line1:SetNonSpaceWrap(false) end
             dragGhost.line2 = dragGhost:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             dragGhost.line2:SetPoint("TOPLEFT", dragGhost, "TOPLEFT", 3, -15)
-            dragGhost.line2:SetWidth(92); dragGhost.line2:SetJustifyH("LEFT")
+            dragGhost.line2:SetWidth(92); dragGhost.line2:SetHeight(10); dragGhost.line2:SetJustifyH("LEFT")
+            if dragGhost.line2.SetNonSpaceWrap then dragGhost.line2:SetNonSpaceWrap(false) end
         end
         PaintEntryRow(dragGhost, entry)
-        dragGhost.num:SetText(tostring(index))
-        dragGhost.num:SetTextColor(0.95, 0.96, 1.0)
-        dragGhost.line1:SetText(name)
+        dragGhost.line1:SetText(tostring(index) .. " " .. name)
         dragGhost.line1:SetTextColor(0.95, 0.96, 1.0)
-        dragGhost.line2:SetText((CLASS_LABELS[classKey] or classKey) .. "  " .. (ROLE_SHORT[entry.role] or entry.role or ""))
+        dragGhost.line2:SetText((CLASS_LABELS[classKey] or classKey) .. " " .. (ROLE_SHORT[entry.role] or entry.role or ""))
         dragGhost.line2:SetTextColor(color[1], color[2], color[3])
         local function PlaceGhost()
             local s = UIParent:GetEffectiveScale()
@@ -762,7 +767,8 @@ function RefreshComposition()
         if you and you ~= "" then
             local class = ""
             if type(UnitClass) == "function" then class = C.ClassKeyFromLabel(UnitClass("player")) end
-            C.EnsurePlayerSlot(preset.entries, you, class)
+            local role = C.RememberedCharacterRole(DB.characterRoles, you, class)
+            C.EnsurePlayerSlot(preset.entries, you, class, role)
         end
     end
     local y = -2
@@ -929,10 +935,9 @@ local function RequestInviteList()
     if type(SendChatMessage) ~= "function" then return end
     if type(DB) == "table" then DB.inviteRequested = nil end
     if not inviteFrame then return end
-    local frames = 0
+    local started = GetTime and GetTime() or 0
     inviteFrame:SetScript("OnUpdate", function()
-        frames = frames + 1
-        if frames < 2 then return end
+        if GetTime and (GetTime() - started) < 0.05 then return end
         inviteFrame:SetScript("OnUpdate", nil)
         SendChatMessage(".z addinvite list", "SAY")
     end)
@@ -1050,11 +1055,20 @@ OpenContextMenu = function(index, anchor, page)
     contextFrame.buttons = {}
     local function AddContext(text, action)
         local b = MakeButton(contextFrame, text, 176, 12, -10 - (table.getn(contextFrame.buttons) * 24), action)
+        local previous = contextFrame.buttons[table.getn(contextFrame.buttons)]
+        if previous then
+            b:ClearAllPoints()
+            b:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -2)
+        end
         table.insert(contextFrame.buttons, b)
     end
     local function ApplyField(field, value)
         local live = EnsureDB().entries[index]
+        if field == "role" then value = C.NormalizeRoleForClass(live.class, value) end
         live[field] = value
+        if live.kind == "player" and field == "role" then
+            C.RememberCharacterRole(DB.characterRoles, live.charName, live.class, value)
+        end
         if live.class == "paladin" and live.role == "healer" then live.spec = "default" end
         CloseContext()
         RefreshComposition()
@@ -1169,18 +1183,37 @@ local function AbilityAlreadyListed(input, ability)
     return false
 end
 
-local function RefreshAbilitySuggestions(input, class)
+local function RefreshAbilitySuggestions(input, class, role)
     if not input then return end
     HideAbilitySuggestions()
     local query = string.lower(C.Trim(input:GetText()))
     if query == "" then return end
     class = ClassValue(class or (settingsClassButton and settingsClassButton.label:GetText()) or "shaman")
-    local catalog = ShirsRaidBuilderAbilities and ShirsRaidBuilderAbilities[class] or {}
+    role = RoleValue(role or (settingsRoleButton and settingsRoleButton.label:GetText()) or "Melee DPS")
+    if role ~= "all" and not C.RoleAllowedForClass(class, role) then return end
+    local catalog = C.AbilitiesForClassRole(ShirsRaidBuilderAbilities, class, role)
+    local denied = nil
+    if role ~= "all" then
+        denied = {}
+        local preset = (type(DB) == "table" and type(C.ActivePreset) == "function") and C.ActivePreset(DB, DB.uiMode) or nil
+        local rules = type(preset) == "table" and preset.denyRules or nil
+        for i = 1, table.getn(rules or {}) do
+            local rule = rules[i]
+            local ruleRole = string.lower(C.Trim(rule.role or ""))
+            if string.lower(C.Trim(rule.class or "")) == string.lower(class)
+                and (ruleRole == role or ruleRole == "all") then
+                for ai = 1, table.getn(rule.abilities or {}) do
+                    denied[string.lower(C.Trim(rule.abilities[ai]))] = true
+                end
+            end
+        end
+    end
     local matches = {}
     for i = 1, table.getn(catalog) do
         local ability = catalog[i]
         local lower = string.lower(ability)
-        if lower ~= query and not AbilityAlreadyListed(input, ability) and string.find(lower, query, 1, true) then
+        if lower ~= query and not AbilityAlreadyListed(input, ability)
+            and (not denied or not denied[lower]) and string.find(lower, query, 1, true) then
             table.insert(matches, ability)
             if table.getn(matches) >= 8 then break end
         end
@@ -1235,7 +1268,7 @@ OpenDenyEditor = function(index)
         denyFrame.input:SetScript("OnEnterPressed", AddWorkingDeny)
         denyFrame.input:SetScript("OnTextChanged", function()
             local current = EnsureDB().entries[denyIndex]
-            RefreshAbilitySuggestions(denyFrame.input, current and current.class or "shaman")
+            RefreshAbilitySuggestions(denyFrame.input, current and current.class or "shaman", current and current.role or "mdps")
         end)
         MakeButton(denyFrame,"Add",64,264,-54,AddWorkingDeny)
         MakeButton(denyFrame,"Save",64,18,14,function() HideAbilitySuggestions(); EnsureDB().entries[denyIndex].denyList=C.NormalizeDenyList(denyWorking); denyFrame:Hide(); RefreshComposition() end, true)
@@ -1244,6 +1277,15 @@ OpenDenyEditor = function(index)
     denyFrame.title:SetText("Extra denies: " .. (C.GetLegacyWhisperName(entry) ~= "" and C.GetLegacyWhisperName(entry) or (entry.charName or "entry"))); denyFrame.input:SetText(""); HideAbilitySuggestions(); RefreshDenyRows(); denyFrame:Show()
 end
 ShirsRaidBuilder_OpenDenyEditor = OpenDenyEditor
+
+function C.ResetDenyRuleEditor()
+    settingsRuleIndex = nil
+    settingsRoleButton.label:SetText("Melee DPS")
+    settingsClassButton.options = ClassesForRole("mdps")
+    settingsClassButton.label:SetText("Shaman")
+    settingsAbilityInput:SetText("")
+    HideAbilitySuggestions()
+end
 
 local function RefreshRuleList()
     if not settingsFrame then return end
@@ -1265,7 +1307,8 @@ local function RefreshRuleList()
         end)
         MakeButton(row,"Remove",64,296,0,function()
             table.remove(EnsureDB().denyRules, captured)
-            settingsRuleIndex=nil; settingsAbilityInput:SetText(""); HideAbilitySuggestions(); RefreshRuleList(); RefreshComposition(); SetStatus("Removed deny rule from " .. (DB.currentPreset or "current profile") .. ".")
+            C.ResetDenyRuleEditor()
+            RefreshRuleList(); RefreshComposition(); SetStatus("Removed deny rule. Ready to add another.")
         end)
         table.insert(settingsFrame.ruleRows,row); y=y-32
     end
@@ -1277,15 +1320,15 @@ local function OpenSettings()
         settingsFrame.title=settingsFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); settingsFrame.title:SetPoint("TOP",settingsFrame,"TOP",0,-14)
         RegisterEscapeFrame(settingsFrame)
         settingsFrame:SetScript("OnHide", function() HideAbilitySuggestions(); CloseChoiceMenu() end)
-        local note=settingsFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); note:SetPoint("TOPLEFT",settingsFrame,"TOPLEFT",18,-34); note:SetText("Rules apply to matching role + class hires in this preset."); note:SetTextColor(0.75,0.80,0.90)
+        local note=settingsFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); note:SetPoint("TOPLEFT",settingsFrame,"TOPLEFT",18,-34); note:SetText("Rules match role + class, or all roles of one class, in this preset."); note:SetTextColor(0.75,0.80,0.90)
         MakeCaption(settingsFrame, "Role", 18, -52)
         MakeCaption(settingsFrame, "Class", 148, -52)
         MakeCaption(settingsFrame, "Ability", 18, -92)
-        settingsRoleButton=SelectButton(settingsFrame, {"Tank","Healer","Ranged DPS","Melee DPS"}, "Melee DPS", 122,18,-68,function(v)
+        settingsRoleButton=SelectButton(settingsFrame, {"All Roles","Tank","Healer","Ranged DPS","Melee DPS"}, "Melee DPS", 122,18,-68,function(v)
             local classes=ClassesForRole(RoleValue(v))
             settingsClassButton.options=classes
             settingsClassButton.label:SetText(classes[1] or "(none)")
-            RefreshAbilitySuggestions(settingsAbilityInput)
+            RefreshAbilitySuggestions(settingsAbilityInput, nil, RoleValue(v))
         end)
         settingsClassButton=SelectButton(settingsFrame, ClassesForRole("mdps"), "Shaman", 110,148,-68,function() RefreshAbilitySuggestions(settingsAbilityInput) end)
         settingsAbilityInput=MakeInput(settingsFrame,190,18,-108,"")
@@ -1295,6 +1338,22 @@ local function OpenSettings()
             if v~="" then
                 local p=EnsureDB(); local role=RoleValue(settingsRoleButton.label:GetText()); local class=ClassValue(settingsClassButton.label:GetText())
                 local idx=settingsRuleIndex or table.getn(p.denyRules)+1
+                local lowerV=string.lower(v)
+                for ri = 1, table.getn(p.denyRules) do
+                    local rule = p.denyRules[ri]
+                    local ruleRole = string.lower(C.Trim(rule.role or ""))
+                    if string.lower(C.Trim(rule.class or "")) == string.lower(class)
+                        and (ruleRole == role or ruleRole == "all") then
+                        local abilities = C.NormalizeDenyList(rule.abilities or {})
+                        for ai = 1, table.getn(abilities) do
+                            if string.lower(abilities[ai]) == lowerV then
+                                local label = ROLE_LABELS[rule.role] .. " / " .. (CLASS_LABELS[rule.class] or rule.class)
+                                SetStatus(v .. " is already denied by " .. label .. ".")
+                                return
+                            end
+                        end
+                    end
+                end
                 if not p.denyRules[idx] then p.denyRules[idx]={role=role,class=class,abilities={}} end
                 p.denyRules[idx].role=role; p.denyRules[idx].class=class
                 table.insert(p.denyRules[idx].abilities,v); p.denyRules[idx].abilities=C.NormalizeDenyList(p.denyRules[idx].abilities)
@@ -1302,9 +1361,7 @@ local function OpenSettings()
             end
         end)
         addAbility:SetFrameLevel(settingsFrame:GetFrameLevel()+6)
-        MakeButton(settingsFrame,"New",64,18,14,function()
-            settingsRuleIndex=nil; settingsRoleButton.label:SetText("Melee DPS"); settingsClassButton.options=ClassesForRole("mdps"); settingsClassButton.label:SetText("Shaman"); settingsAbilityInput:SetText(""); HideAbilitySuggestions()
-        end,true)
+        MakeButton(settingsFrame,"New",64,18,14,C.ResetDenyRuleEditor,true)
         MakeButton(settingsFrame,"Close",64,86,14,function() HideAbilitySuggestions(); settingsFrame:Hide() end,true)
         settingsFrame.ruleRows={}
     end
@@ -2176,7 +2233,7 @@ local function FinishExecute(status)
     executeWaitingNod = false
     executeNodReady = false
     executeNodName = ""
-    executeNodFrames = 0
+    executeNodStarted = 0
     executeWhisperGap = 0
     if executeFrame then executeFrame:SetScript("OnUpdate", nil) end
     if C.sortFrame then C.sortFrame:SetScript("OnUpdate", nil); C.sortFrame.busy = nil; C.sortFrame.onDone = nil end
@@ -2194,13 +2251,13 @@ local function NoteCommandSent(entry)
         executeWaitingNod = true
         executeNodReady = false
         executeNodName = entry.target
-        executeNodFrames = 0
+        executeNodStarted = 0
         executeWhisperGap = 0
     else
         executeWaitingNod = false
         executeNodReady = false
         executeNodName = ""
-        executeNodFrames = 0
+        executeNodStarted = 0
         executeWhisperGap = 0
         if C.IsHireCommand(entry) then executeHireReadyAt = (GetTime and GetTime() or 0) + RandomHireDelay() end
     end
@@ -2208,14 +2265,21 @@ end
 
 local function ReadyForNext(nextEntry)
     AssignNewCompanions()
-    if executeWaitingNod and not executeNodReady then executeNodFrames = executeNodFrames + 1 end
+    if executeWaitingNod and not executeNodReady then
+        if (executeNodStarted or 0) == 0 then executeNodStarted = GetTime and GetTime() or 0 end
+    end
+    local nodElapsed = 0
+    if executeWaitingNod and not executeNodReady and GetTime then
+        nodElapsed = GetTime() - (executeNodStarted or 0)
+    end
     if executeWaitingNod then
-        if executeNodReady or executeNodFrames >= NOD_TIMEOUT_FRAMES then
-            if (not executeNodReady) and executeNodFrames >= NOD_TIMEOUT_FRAMES and executeWhisperGap == 0 then
+        if executeNodReady or nodElapsed >= NOD_TIMEOUT_SECONDS then
+            if (not executeNodReady) and nodElapsed >= NOD_TIMEOUT_SECONDS and executeWhisperGap == 0 then
                 if executeNodName ~= "" then Chat("No nod from " .. executeNodName .. "; continuing.") end
             end
-            executeWhisperGap = executeWhisperGap + 1
-            if executeWhisperGap < WHISPER_GAP_FRAMES then
+            local gapStarted = executeWhisperGap == 0
+            if gapStarted and GetTime then executeWhisperGap = GetTime() end
+            if not GetTime or (GetTime() - executeWhisperGap) < WHISPER_GAP_SECONDS then
                 SetStatus("Pacing whispers.")
                 return false
             end
@@ -2226,9 +2290,9 @@ local function ReadyForNext(nextEntry)
         SetStatus("Waiting for nod from " .. (executeNodName ~= "" and executeNodName or "companion") .. ".")
         return false
     end
-    if nextEntry and C.IsHireCommand(nextEntry) then
+    if (executeHireReadyAt or 0) > 0 then
         local now = GetTime and GetTime() or 0
-        if now < (executeHireReadyAt or 0) then
+        if now < executeHireReadyAt then
             SetStatus("Pacing hires.")
             return false
         end
@@ -2269,7 +2333,7 @@ local function ExecuteQueue()
     if executing then SetStatus("Queue is already running."); return end
     if C.whisperRun then executeQueue = C.BuildWhisperQueue(EnsureDB()) else executeQueue = C.BuildQueue(EnsureDB()) end
     if table.getn(executeQueue) == 0 then SetStatus("Queue is empty."); C.whisperRun = nil; return end
-    executing = true; executeIndex = 1; executeElapsed = 0; executeFrames = 0; executeHireReadyAt = 0; executeWaitingNod = false; executeNodReady = false; executeNodName = ""; executeNodFrames = 0; executeWhisperGap = 0; executeWaitElapsed = 0; executeWaitStarted = 0; executePartyBefore = nil; executeCompanions = {}; executeBaseline = SnapshotGroup(); executeCompanionList = {}; executeGrinfoRequested = false; executeGrinfoReady = false; executeGrinfoExpanded = false
+    executing = true; executeIndex = 1; executeElapsed = 0; executeFrames = 0; executeHireReadyAt = 0; executeWaitingNod = false; executeNodReady = false; executeNodName = ""; executeNodStarted = 0; executeWhisperGap = 0; executeWaitElapsed = 0; executeWaitStarted = 0; executePartyBefore = nil; executeCompanions = {}; executeBaseline = SnapshotGroup(); executeCompanionList = {}; executeGrinfoRequested = false; executeGrinfoReady = false; executeGrinfoExpanded = false
     if math.randomseed then math.randomseed((GetTime and GetTime() or 0) * 1000) end
     SendCurrentQueueEntry()
     if C.whisperRun then SetStatus("Whispering 1/" .. table.getn(executeQueue) .. ".")
@@ -2413,8 +2477,8 @@ function C.ApplyRaidMode()
         if sort then mainFrame.modeBtn.label:SetText("Hire Mode") else mainFrame.modeBtn.label:SetText("Sort Mode") end
     end
     if mainFrame.titleText then
-        if sort then mainFrame.titleText:SetText("Shir's Raid Builder 0.61 - Sort")
-        else mainFrame.titleText:SetText("Shir's Raid Builder 0.61") end
+        if sort then mainFrame.titleText:SetText("Shir's Raid Builder 0.62 - Sort")
+        else mainFrame.titleText:SetText("Shir's Raid Builder 0.62") end
     end
     if mainFrame.accountContent then
         if sort then mainFrame.accountContent:Hide() else mainFrame.accountContent:Show() end
@@ -2521,7 +2585,7 @@ local function CreateMain()
     EnsureDB()
     mainFrame=CreateFrame("Frame","ShirsRaidBuilderMainFrame",UIParent); mainFrame:SetWidth(780); mainFrame:SetHeight(640); mainFrame:SetPoint("CENTER",UIParent,"CENTER",0,0); mainFrame:SetFrameStrata("FULLSCREEN"); mainFrame:SetToplevel(true); mainFrame:SetMovable(true); mainFrame:EnableMouse(true)
     mainFrame:SetBackdrop(PANEL_BG); mainFrame:SetBackdropColor(0.03, 0.04, 0.07, 1.0); mainFrame:SetBackdropBorderColor(0.70, 0.70, 0.70, 1.0)
-    local title=mainFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOP",mainFrame,"TOP",0,-12); title:SetText("Shir's Raid Builder 0.61")
+    local title=mainFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOP",mainFrame,"TOP",0,-12); title:SetText("Shir's Raid Builder 0.62")
     mainFrame.titleText = title
     MakeButton(mainFrame,"X",22,736,-8,function() mainFrame:Hide() end)
     local drag=CreateFrame("Frame",nil,mainFrame); drag:SetWidth(500); drag:SetHeight(24); drag:SetPoint("TOP",mainFrame,"TOP",0,-4); drag:EnableMouse(true); drag:SetScript("OnMouseDown",function() mainFrame:StartMoving() end); drag:SetScript("OnMouseUp",function() mainFrame:StopMovingOrSizing() end)

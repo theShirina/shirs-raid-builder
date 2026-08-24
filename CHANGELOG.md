@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.62
+
+### Fixed
+
+- Hire pacing no longer breaks at high frame rates: nod timeouts, whisper gaps, and the invite-list request now measure real time instead of frames
+- Group denies and setups no longer fire while the server is still processing the last hire; the 7.5–8.5 second wait after each hire now applies to whatever command comes next, not only to another hire
+
+### Added
+
+- Ability suggestions in the deny-rules editor hide spells that a matching rule already denies for the selected role and class (or an all-roles rule of that class)
+- Adding an ability that the selected role + class combination already denies is rejected with a message naming the rule that holds it, so duplicate rules can no longer be created
+
 ## 0.61
 
 ### Added

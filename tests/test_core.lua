@@ -2,6 +2,7 @@
 -- Example: lua tests/test_core.lua
 
 dofile("../addon/ShirsRaidBuilder/ShirsRaidBuilder_Core.lua")
+dofile("../addon/ShirsRaidBuilder/ShirsRaidBuilder_Abilities.lua")
 local C = ShirsRaidBuilderCore
 
 local normalized = C.NormalizeDenyList({" Lightning Bolt ", "lightning bolt", "", "Chain Lightning"})
@@ -47,6 +48,26 @@ assert(table.getn(effective) == 3)
 assert(effective[1] == "Lightning Bolt")
 assert(effective[2] == "Chain Lightning")
 assert(effective[3] == "Windfury Totem")
+local classWide = C.GetEffectiveDenyList(
+    {kind="normal", role="healer", class="priest"},
+    {{role="all", class="priest", abilities={"Shackle Undead"}}}
+)
+assert(table.getn(classWide) == 1 and classWide[1] == "Shackle Undead")
+local classWidePlan = C.BuildGroupDenyPlan({{role="all", class="priest", abilities={"Shackle Undead"}}})
+assert(table.getn(classWidePlan) == 1 and classWidePlan[1].role == "all")
+local classWideExpanded = C.ExpandRoleDenies(classWidePlan, {
+    {name="Holyone", class="priest", role="healer"},
+    {name="Shadowone", class="priest", role="rdps"},
+    {name="Otherheal", class="paladin", role="healer"},
+})
+assert(table.getn(classWideExpanded) == 2)
+assert(classWideExpanded[1].target == "Holyone" and classWideExpanded[2].target == "Shadowone")
+local overlapPlan = C.BuildGroupDenyPlan({
+    {role="all", class="priest", abilities={"Shackle Undead"}},
+    {role="healer", class="priest", abilities={"Shackle Undead"}},
+})
+local overlapExpanded = C.ExpandRoleDenies(overlapPlan, {{name="Holyone", class="priest", role="healer"}})
+assert(table.getn(overlapExpanded) == 1)
 local normalWithRule = {kind="normal", account="Healowner", role="healer", class="priest"}
 local normalQueue = C.BuildQueue({entries={normalWithRule}, denyRules={{role="healer", class="priest", abilities={"Holy Nova"}}}})
 assert(table.getn(normalQueue) == 2)
@@ -286,6 +307,36 @@ assert(swapMoves[1].name == "A" and swapMoves[1].group == 2)
 assert(swapMoves[6].name == "F" and swapMoves[6].group == 1)
 assert(C.IsPlayerEntry({kind="player", charName="Shir"}))
 assert(C.IsFilledEntry({kind="player", charName="Shir"}))
+assert(C.RoleAllowedForClass("warrior", "tank"))
+assert(C.RoleAllowedForClass("warrior", "mdps"))
+assert(not C.RoleAllowedForClass("warrior", "rdps"))
+assert(C.RoleAllowedForClass("priest", "healer"))
+assert(C.RoleAllowedForClass("priest", "rdps"))
+local healerAbilities = C.AbilitiesForClassRole(ShirsRaidBuilderAbilities, "priest", "healer")
+local rangedAbilities = C.AbilitiesForClassRole(ShirsRaidBuilderAbilities, "priest", "rdps")
+local invalidAbilities = C.AbilitiesForClassRole(ShirsRaidBuilderAbilities, "warrior", "rdps")
+assert(table.getn(healerAbilities) > 0 and table.getn(rangedAbilities) > 0 and table.getn(invalidAbilities) == 0)
+local healerShackle, rangedShackle = false, false
+for i = 1, table.getn(healerAbilities) do if healerAbilities[i] == "Shackle Undead" then healerShackle = true end end
+for i = 1, table.getn(rangedAbilities) do if rangedAbilities[i] == "Shackle Undead" then rangedShackle = true end end
+assert(healerShackle and rangedShackle)
+local rememberedRoles = {}
+assert(C.RememberCharacterRole(rememberedRoles, "Shir", "warrior", "mdps") == "mdps")
+assert(C.RememberedCharacterRole(rememberedRoles, "Shir", "warrior") == "mdps")
+assert(C.RememberCharacterRole(rememberedRoles, "Shir", "warrior", "rdps") == "tank")
+assert(C.RememberedCharacterRole(rememberedRoles, "Shir", "warrior") == "tank")
+local migratedRoles = {}
+C.MigrateCharacterRoles(migratedRoles, {
+    Current={entries={{kind="normal", account="Other"}}},
+    Older={entries={{kind="player", charName="Shir", class="warrior", role="mdps"}}},
+}, "Current")
+assert(C.RememberedCharacterRole(migratedRoles, "Shir", "warrior") == "mdps")
+local conflictRoles = {}
+C.MigrateCharacterRoles(conflictRoles, {
+    Current={entries={{kind="player", charName="Priestone", class="priest", role="healer"}}},
+    Older={entries={{kind="player", charName="Priestone", class="priest", role="rdps"}}},
+}, "Current")
+assert(C.RememberedCharacterRole(conflictRoles, "Priestone", "priest") == "healer")
 local youBoard = C.PadRaidSlots({{kind="normal", account="Alt"}}, 8)
 assert(C.EnsurePlayerSlot(youBoard, "Shir", "warrior", "tank") == 2)
 assert(youBoard[2].kind == "player" and youBoard[2].charName == "Shir")
@@ -323,6 +374,8 @@ assert(keptYou.class == "warrior")
 assert(keptYou.role == "tank")
 local keptPriest = C.NormalizeBoardEntry({kind="player", charName="Healowner", class="priest", role="rdps"})
 assert(keptPriest.kind == "player" and keptPriest.role == "rdps")
+local repairedWarrior = C.NormalizeBoardEntry({kind="player", charName="Shir", class="warrior", role="rdps"})
+assert(repairedWarrior.role == "tank")
 local keptLegacy = C.NormalizeBoardEntry({kind="legacy", charName="Longname", class="shaman"})
 assert(keptLegacy.kind == "legacy")
 assert(keptLegacy.whisperName == "Longnam-lite")

@@ -88,6 +88,7 @@ function C.BuildNormalHireCommand(slot)
         C.Trim(slot.gender) ~= "" and C.Trim(slot.gender) or "male",
     }
     for i = 2, table.getn(fields) do if not C.IsSafeCommandToken(fields[i]) then return nil end end
+    if not C.RoleAllowedForClass(fields[3], fields[4]) then return nil end
     return ".z addinvite " .. fields[1] .. " " .. fields[2] .. " " .. fields[3]
         .. " " .. fields[4] .. " " .. fields[5] .. " " .. fields[6] .. " " .. fields[7]
 end
@@ -132,7 +133,7 @@ function C.GetEffectiveDenyList(entry, rules)
             local rule = rules[i]
             local ruleRole = string.lower(C.Trim(rule.role))
             local ruleClass = string.lower(C.Trim(rule.class))
-            if ruleRole == entryRole and ruleClass == entryClass then
+            if (ruleRole == entryRole or ruleRole == "all") and ruleClass == entryClass then
                 addValues(rule.abilities)
             end
         end
@@ -149,7 +150,8 @@ function C.GetRoleDenyList(entry, rules)
     local entryClass = string.lower(C.Trim(entry.class))
     for i = 1, table.getn(rules) do
         local rule = rules[i]
-        if string.lower(C.Trim(rule.role)) == entryRole and string.lower(C.Trim(rule.class)) == entryClass then
+        local ruleRole = string.lower(C.Trim(rule.role))
+        if (ruleRole == entryRole or ruleRole == "all") and string.lower(C.Trim(rule.class)) == entryClass then
             local abilities = C.NormalizeDenyList(rule.abilities)
             for ai = 1, table.getn(abilities) do
                 local key = string.lower(abilities[ai])
@@ -398,7 +400,7 @@ function C.ExpandNamedWhispers(items, companions, leftoverSet, phase)
         local item = items[i]
         local names = C.MatchCompanionsScoped(companions, item.class or item.role and item.class, item.role)
         if item.phase == "role-class-final" or (item.role and item.class and item.ability) then
-            names = C.MatchCompanions(companions, item.role, item.class)
+            names = C.MatchCompanionsScoped(companions, item.class, item.role)
         end
         local first, second = C.OrderCompanionThenLegacy(names, leftoverSet)
         local function Emit(name, dest)
@@ -440,12 +442,16 @@ end
 function C.ExpandRoleDenies(denies, companions, leftoverSet)
     local result = {}
     local leftover = {}
+    local seen = {}
     if type(denies) ~= "table" then return result end
     for i = 1, table.getn(denies) do
         local deny = denies[i]
-        local names = C.MatchCompanions(companions, deny.role, deny.class)
+        local names = C.MatchCompanionsScoped(companions, deny.class, deny.role)
         local first, second = C.OrderCompanionThenLegacy(names, leftoverSet)
         local function Emit(name, dest)
+            local key = string.lower(C.Trim(name)) .. "|" .. string.lower(C.Trim(deny.ability))
+            if seen[key] then return end
+            seen[key] = true
             table.insert(dest, {
                 kind = "deny",
                 phase = "role-class-final",
@@ -574,6 +580,74 @@ function C.DefaultRoleForClass(class)
     return "tank"
 end
 
+function C.RoleAllowedForClass(class, role)
+    local key = string.lower(C.Trim(class))
+    local want = C.NormalizeRoleLabel(role)
+    local roles = {
+        warrior={tank=true,mdps=true}, mage={rdps=true}, warlock={rdps=true},
+        priest={healer=true,rdps=true}, druid={tank=true,healer=true,mdps=true,rdps=true},
+        paladin={tank=true,healer=true,mdps=true}, shaman={tank=true,healer=true,mdps=true,rdps=true},
+        hunter={rdps=true}, rogue={mdps=true},
+    }
+    return roles[key] and roles[key][want] == true or false
+end
+
+function C.AbilitiesForClassRole(catalog, class, role)
+    local key = C.NormalizeClassLabel(class)
+    local want = C.NormalizeRoleLabel(role)
+    if type(catalog) ~= "table" then return {} end
+    if want ~= "all" and not C.RoleAllowedForClass(key, want) then return {} end
+    return type(catalog[key]) == "table" and catalog[key] or {}
+end
+
+function C.NormalizeRoleForClass(class, role)
+    local want = C.NormalizeRoleLabel(role)
+    if C.RoleAllowedForClass(class, want) then return want end
+    return C.DefaultRoleForClass(class)
+end
+
+function C.RememberCharacterRole(roles, name, class, role)
+    local value = C.NormalizeRoleForClass(class, role)
+    if type(roles) == "table" then
+        local key = string.lower(C.Trim(name))
+        if key ~= "" then roles[key] = value end
+    end
+    return value
+end
+
+function C.RememberedCharacterRole(roles, name, class)
+    local key = string.lower(C.Trim(name))
+    local role = type(roles) == "table" and roles[key] or nil
+    return C.NormalizeRoleForClass(class, role)
+end
+
+function C.MigrateCharacterRoles(roles, presets, currentPreset)
+    if type(roles) ~= "table" or type(presets) ~= "table" then return roles end
+    local names = {}
+    local name
+    for name in pairs(presets) do
+        if name ~= currentPreset then table.insert(names, name) end
+    end
+    table.sort(names)
+    if currentPreset and type(presets[currentPreset]) == "table" then table.insert(names, 1, currentPreset) end
+    local ni
+    for ni = 1, table.getn(names) do
+        local preset = presets[names[ni]]
+        local entries = type(preset) == "table" and preset.entries or nil
+        if type(entries) == "table" then
+            local i
+            for i = 1, table.getn(entries) do
+                local entry = entries[i]
+                if C.IsPlayerEntry(entry) and C.Trim(entry.charName) ~= "" then
+                    local key = string.lower(C.Trim(entry.charName))
+                    if not roles[key] then C.RememberCharacterRole(roles, entry.charName, entry.class, entry.role) end
+                end
+            end
+        end
+    end
+    return roles
+end
+
 function C.ClassKeyFromLabel(class)
     return string.lower(C.Trim(class))
 end
@@ -583,8 +657,7 @@ function C.NormalizeBoardEntry(entry)
     if entry.kind == "empty" then return entry end
     if entry.kind == "player" then
         local class = C.Trim(entry.class)
-        local role = C.Trim(entry.role)
-        if role == "" then role = C.DefaultRoleForClass(class) end
+        local role = C.NormalizeRoleForClass(class, entry.role)
         if class == "paladin" and role == "healer" then entry.spec = "default" end
         entry.kind = "player"
         entry.class = class
@@ -593,8 +666,7 @@ function C.NormalizeBoardEntry(entry)
     end
     if entry.kind == "guest" then
         local class = C.NormalizeClassLabel(entry.class)
-        local role = C.NormalizeRoleLabel(entry.role)
-        if role == "" then role = C.DefaultRoleForClass(class) end
+        local role = C.NormalizeRoleForClass(class, entry.role)
         entry.kind = "guest"
         entry.class = class
         entry.role = role
@@ -604,8 +676,8 @@ function C.NormalizeBoardEntry(entry)
     if entry.kind == "legacy" or (C.Trim(entry.charName) ~= "" and C.Trim(entry.account) == "" and entry.kind ~= "normal" and entry.kind ~= "guest") then
         entry.kind = "legacy"
         entry.denyList = C.NormalizeDenyList(entry.denyList)
-        entry.role = C.Trim(entry.role) ~= "" and string.lower(entry.role) or "mdps"
         entry.class = C.Trim(entry.class) ~= "" and string.lower(entry.class) or "warrior"
+        entry.role = C.NormalizeRoleForClass(entry.class, entry.role)
         if entry.class == "paladin" and entry.role == "healer" then entry.spec = "default" end
         local hireName = C.GetLegacyHireName(entry)
         if hireName ~= "" then
@@ -616,8 +688,8 @@ function C.NormalizeBoardEntry(entry)
         return entry
     end
     entry.kind = "normal"
-    entry.role = C.Trim(entry.role) ~= "" and string.lower(entry.role) or "mdps"
     entry.class = C.Trim(entry.class) ~= "" and string.lower(entry.class) or "warrior"
+    entry.role = C.NormalizeRoleForClass(entry.class, entry.role)
     if entry.class == "paladin" and entry.role == "healer" then entry.spec = "default" end
     return entry
 end
@@ -651,7 +723,7 @@ function C.EnsurePlayerSlot(entries, name, class, role)
     local previous = entries[found]
     local keepRole = C.Trim(role)
     if keepRole == "" and previous and previous.kind == "player" then keepRole = C.Trim(previous.role) end
-    if keepRole == "" then keepRole = C.DefaultRoleForClass(class) end
+    keepRole = C.NormalizeRoleForClass(class, keepRole)
     entries[found] = {
         kind = "player",
         charName = playerName,
