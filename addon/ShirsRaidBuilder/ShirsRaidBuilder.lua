@@ -2343,7 +2343,8 @@ local function ExecuteQueue()
         if not executing then return end
         local nextIndex = executeIndex + 1
         local nextEntry = executeQueue[nextIndex]
-        if nextEntry and IsHeldPhase(nextEntry.phase) then
+        local currentEntry = executeQueue[executeIndex]
+        if (nextEntry and IsHeldPhase(nextEntry.phase)) or (currentEntry and IsHeldPhase(currentEntry.phase) and not executeGrinfoExpanded) then
             if not executeGrinfoReady then
                 if not executeGrinfoRequested then
                     executeGrinfoRequested = true
@@ -2370,11 +2371,22 @@ local function ExecuteQueue()
                 return
             end
             if not executeGrinfoExpanded then
-                if not ReadyForNext(nextEntry) then return end
-                executeIndex = nextIndex
+                if executeIndex > 1 then
+                    -- The current entry was already sent (normal flow: we are
+                    -- parked on the last sent index, expansion replaces what is ahead).
+                    if not ReadyForNext(nextEntry) then return end
+                    executeIndex = nextIndex
+                end
                 ExpandPendingGroupDenies()
                 executeGrinfoExpanded = true
                 executeWaitingNod = false
+                if currentEntry and IsHeldPhase(currentEntry.phase) then
+                    -- Entry 1 was never sent (queue starts on a held phase);
+                    -- after expansion it stays at executeIndex and goes out now.
+                    SendCurrentQueueEntry()
+                    SetStatus("Executing " .. executeIndex .. "/" .. table.getn(executeQueue) .. ".")
+                    return
+                end
                 if executeIndex > table.getn(executeQueue) then
                     FinishExecute("Execution complete. All queued commands were sent."); return
                 end
