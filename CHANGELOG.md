@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.64
+
+### Added
+
+- Validation that blocks deny-rule entries for role and class combinations that cannot exist together
+
+### Fixed
+
+- Hire-mode boards are no longer replaced by sort-mode layouts after relogging
+- Class-setup whispers are no longer dropped when the queue starts on a held phase
+- A class-wide deny rule now reaches legacy characters placed from board cards; All Roles priest denies such as Shackle Undead now reach shadow priests on the board
+- Group deny and setup targets include companions hired late in the plan: the name request waits for the final hire to finish processing, and target lists wait until each named companion has appeared in the group
+- Changing Role or Class in the deny editor no longer folds the next ability into the previously selected rule; abilities land on the pair shown at click time
+- Removing a deny rule deletes that exact rule even when the list has changed since it was drawn
+
 ## 0.62
 
 ### Fixed
