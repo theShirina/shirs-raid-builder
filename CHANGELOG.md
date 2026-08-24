@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Profiles and settings now save correctly on a fresh installation; previously the saved-variables file stayed empty and every profile was lost on logout or reload
 - Adding an ability for one role, such as Battle Shout under Tank Warrior, no longer folds into the All Roles rule of the same class; it creates its own role-specific rule
 - The Other Commands panel shows its saved rules again after they stopped rendering
 
