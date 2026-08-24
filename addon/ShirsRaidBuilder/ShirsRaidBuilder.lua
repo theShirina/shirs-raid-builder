@@ -2348,6 +2348,15 @@ local function ExecuteQueue()
             if not executeGrinfoReady then
                 if not executeGrinfoRequested then
                     executeGrinfoRequested = true
+                    -- Wait out the post-hire window first: a GRINFO answer that
+                    -- lands while the last .z addinvite is still processing lists
+                    -- companions as of before that hire, so the newest companion
+                    -- would be missing from every expanded target list.
+                    local hirePending = (executeHireReadyAt or 0) > 0 and GetTime and (GetTime() < executeHireReadyAt)
+                    if hirePending then
+                        SetStatus("Finishing the current hire before asking for names.")
+                        return
+                    end
                     executeWaitStarted = GetTime and GetTime() or 0
                     RequestCompanionInfo()
                 end
