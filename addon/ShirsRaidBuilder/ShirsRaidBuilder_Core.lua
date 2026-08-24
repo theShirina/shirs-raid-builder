@@ -24,6 +24,62 @@ function C.IsSafeCommandToken(value)
     return string.find(token, "^[A-Za-z0-9]+$") ~= nil
 end
 
+-- Deny-list editors show five rows. The scrollbar appears at five or more
+-- items so a full page never sits under a dead thumb.
+C.DENY_LIST_VISIBLE_ROWS = 5
+
+function C.DenyListNeedsScrollbar(count)
+    return (tonumber(count) or 0) >= C.DENY_LIST_VISIBLE_ROWS
+end
+
+function C.DenyListMaxOffset(count, visible)
+    visible = tonumber(visible) or C.DENY_LIST_VISIBLE_ROWS
+    local total = tonumber(count) or 0
+    if total <= visible then return 0 end
+    return total - visible
+end
+
+function C.ClampDenyListOffset(offset, count, visible)
+    local maxOffset = C.DenyListMaxOffset(count, visible)
+    offset = math.floor(tonumber(offset) or 0)
+    if offset < 0 then return 0 end
+    if offset > maxOffset then return maxOffset end
+    return offset
+end
+
+function C.DenyListThumb(offset, count, trackHeight, visible)
+    trackHeight = tonumber(trackHeight) or 0
+    visible = tonumber(visible) or C.DENY_LIST_VISIBLE_ROWS
+    local total = tonumber(count) or 0
+    if trackHeight <= 0 or total < visible then
+        return 0, 0
+    end
+    local thumb = math.floor(trackHeight * visible / total)
+    if thumb < 16 then thumb = 16 end
+    if thumb > trackHeight then thumb = trackHeight end
+    local maxOffset = C.DenyListMaxOffset(total, visible)
+    local travel = trackHeight - thumb
+    local y = 0
+    if maxOffset > 0 then
+        y = -math.floor((C.ClampDenyListOffset(offset, total, visible) / maxOffset) * travel + 0.5)
+    end
+    return thumb, y
+end
+
+function C.DenyListOffsetFromThumb(thumbY, count, trackHeight, visible)
+    visible = tonumber(visible) or C.DENY_LIST_VISIBLE_ROWS
+    local total = tonumber(count) or 0
+    local maxOffset = C.DenyListMaxOffset(total, visible)
+    if maxOffset <= 0 then return 0 end
+    local thumb, _ = C.DenyListThumb(0, total, trackHeight, visible)
+    local travel = (tonumber(trackHeight) or 0) - thumb
+    if travel <= 0 then return 0 end
+    local y = -(tonumber(thumbY) or 0)
+    if y < 0 then y = 0 end
+    if y > travel then y = travel end
+    return C.ClampDenyListOffset(math.floor((y / travel) * maxOffset + 0.5), total, visible)
+end
+
 function C.NormalizeDenyList(values)
     local result = {}
     local seen = {}
@@ -37,6 +93,29 @@ function C.NormalizeDenyList(values)
         end
     end
     return result
+end
+
+-- Deny-rule targeting resolves from the editor dropdowns at click time.
+-- Matching accepts an all-roles wildcard; lookup is exact so adding to a
+-- Tank/Warrior rule never folds into an all-roles Warrior rule.
+function C.DenyRuleMatches(rule, role, class)
+    local ruleRole = string.lower(C.Trim(rule.role or ""))
+    return string.lower(C.Trim(rule.class or "")) == string.lower(class)
+        and (ruleRole == string.lower(role) or ruleRole == "all")
+end
+
+function C.FindDenyRule(rules, role, class)
+    local wantRole = string.lower(C.Trim(role or ""))
+    local wantClass = string.lower(C.Trim(class or ""))
+    for i = 1, table.getn(rules or {}) do
+        local rule = rules[i]
+        if type(rule) == "table"
+            and string.lower(C.Trim(rule.class or "")) == wantClass
+            and string.lower(C.Trim(rule.role or "")) == wantRole then
+            return rule
+        end
+    end
+    return nil
 end
 
 function C.CopyDenyList(values)

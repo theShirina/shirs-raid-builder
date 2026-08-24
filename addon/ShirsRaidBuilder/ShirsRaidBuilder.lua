@@ -6,7 +6,10 @@ C.VERSION = type(GetAddOnMetadata) == "function" and GetAddOnMetadata("ShirsRaid
 local DB = {}
 
 local function BindAccountDB()
-    if type(ShirsRaidBuilderDB) ~= "table" then return false end
+    -- The SavedVariable global must exist for the client to save anything.
+    -- A missing table used to return early, so every edit landed in the
+    -- file-local DB and logout wrote "ShirsRaidBuilderDB = nil".
+    if type(ShirsRaidBuilderDB) ~= "table" then ShirsRaidBuilderDB = {} end
     local pending = DB
     DB = ShirsRaidBuilderDB
     if type(DB.presets) ~= "table" then DB.presets = {} end
@@ -92,7 +95,6 @@ local contextFrame = nil
 local addNormalFrame = nil
 local addLegacyFrame = nil
 local namePrompt = nil
-local denyRows = {}
 local denyWorking = {}
 local denyIndex = nil
 local settingsAbilityInput = nil
@@ -201,20 +203,7 @@ end
 -- Deny-rule targeting always resolves from the editor dropdowns at click
 -- time, so changing Role or Class can never leave the next Add writing
 -- into a rule the user can no longer see selected.
--- Shared through C. to spare the file's local-variable budget (Lua 5.0).
-function C.DenyRuleMatches(rule, role, class)
-    local ruleRole = string.lower(C.Trim(rule.role or ""))
-    return string.lower(C.Trim(rule.class or "")) == string.lower(class)
-        and (ruleRole == string.lower(role) or ruleRole == "all")
-end
-
-function C.FindDenyRule(rules, role, class)
-    for i = 1, table.getn(rules or {}) do
-        local rule = rules[i]
-        if type(rule) == "table" and C.DenyRuleMatches(rule, role, class) then return rule end
-    end
-    return nil
-end
+-- Matching and lookup live in Core (ShirsRaidBuilder_Core.lua).
 
 local BUTTON_H = 22
 local DROP_H = 22
@@ -297,6 +286,116 @@ local function MakeInput(parent, width, x, y, value)
     input:SetFontObject(GameFontNormalSmall); input:SetText(value or "")
     input:SetTextColor(0.95, 0.97, 1.0)
     return input
+end
+
+-- One five-row viewport plus a thumb that only appears at five or more items.
+-- Hung on C. so this file stays under Lua 5.0's 200-local cap.
+function C.EnsureDenyListScroll(host, spec)
+    if host.listScroll then return host.listScroll end
+    local viewport = CreateFrame("Frame", nil, host)
+    viewport:SetWidth(spec.width)
+    viewport:SetHeight(spec.rowHeight * C.DENY_LIST_VISIBLE_ROWS)
+    viewport:SetPoint("TOPLEFT", host, "TOPLEFT", spec.x, spec.y)
+    viewport:EnableMouse(true)
+    viewport:EnableMouseWheel(true)
+    local track = CreateFrame("Button", nil, host)
+    track:SetWidth(12)
+    track:SetHeight(spec.rowHeight * C.DENY_LIST_VISIBLE_ROWS)
+    track:SetPoint("TOPLEFT", viewport, "TOPRIGHT", 4, 0)
+    track:SetBackdrop(DROP_BG)
+    track:SetBackdropColor(0.04, 0.06, 0.10, 1.0)
+    track:SetBackdropBorderColor(0.35, 0.45, 0.60, 1.0)
+    track:EnableMouseWheel(true)
+    local thumb = CreateFrame("Button", nil, track)
+    thumb:SetWidth(10)
+    thumb:SetHeight(16)
+    thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)
+    thumb:SetBackdrop(DROP_BG)
+    thumb:SetBackdropColor(0.45, 0.58, 0.78, 1.0)
+    thumb:SetBackdropBorderColor(0.80, 0.88, 1.0, 1.0)
+    thumb:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+    local state = { offset = 0, items = {}, rows = {}, viewport = viewport, track = track, thumb = thumb, dragging = false }
+    local function Paint()
+        local items = state.items or {}
+        local count = table.getn(items)
+        state.offset = C.ClampDenyListOffset(state.offset, count)
+        if C.DenyListNeedsScrollbar(count) then
+            local height, y = C.DenyListThumb(state.offset, count, track:GetHeight())
+            thumb:SetHeight(height)
+            thumb:ClearAllPoints()
+            thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, y)
+            track:Show()
+            thumb:Show()
+        else
+            track:Hide()
+            thumb:Hide()
+        end
+        local i
+        for i = 1, C.DENY_LIST_VISIBLE_ROWS do
+            local row = state.rows[i]
+            local index = state.offset + i
+            local item = items[index]
+            if item ~= nil then
+                row:Show()
+                spec.bindRow(row, item, index)
+            else
+                row:Hide()
+            end
+        end
+    end
+    state.Paint = Paint
+    local function OnWheel()
+        local count = table.getn(state.items or {})
+        if not C.DenyListNeedsScrollbar(count) then return end
+        state.offset = C.ClampDenyListOffset(state.offset - (arg1 or 0), count)
+        Paint()
+    end
+    viewport:SetScript("OnMouseWheel", OnWheel)
+    track:SetScript("OnMouseWheel", OnWheel)
+    host:EnableMouseWheel(true)
+    host:SetScript("OnMouseWheel", OnWheel)
+    track:SetScript("OnClick", function()
+        local count = table.getn(state.items or {})
+        if not C.DenyListNeedsScrollbar(count) then return end
+        local _, cursorY = GetCursorPosition()
+        local scale = UIParent:GetEffectiveScale() or 1
+        if scale == 0 then scale = 1 end
+        local page = C.DENY_LIST_VISIBLE_ROWS
+        if (cursorY / scale) > (thumb:GetTop() or 0) then
+            state.offset = C.ClampDenyListOffset(state.offset - page, count)
+        else
+            state.offset = C.ClampDenyListOffset(state.offset + page, count)
+        end
+        Paint()
+    end)
+    local function StopDrag() state.dragging = false end
+    thumb:SetScript("OnMouseDown", function() state.dragging = true end)
+    thumb:SetScript("OnMouseUp", StopDrag)
+    viewport:SetScript("OnMouseUp", StopDrag)
+    host:SetScript("OnMouseUp", StopDrag)
+    thumb:SetScript("OnUpdate", function()
+        if not state.dragging then return end
+        local count = table.getn(state.items or {})
+        if not C.DenyListNeedsScrollbar(count) then state.dragging = false; return end
+        local _, cursorY = GetCursorPosition()
+        local scale = UIParent:GetEffectiveScale() or 1
+        if scale == 0 then scale = 1 end
+        local y = (cursorY / scale) - (track:GetTop() or 0)
+        if y > 0 then y = 0 end
+        state.offset = C.DenyListOffsetFromThumb(y, count, track:GetHeight())
+        Paint()
+    end)
+    local i
+    for i = 1, C.DENY_LIST_VISIBLE_ROWS do
+        local row = spec.createRow(viewport)
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", viewport, "TOPLEFT", 0, -((i - 1) * spec.rowHeight))
+        row:EnableMouseWheel(true)
+        row:SetScript("OnMouseWheel", OnWheel)
+        table.insert(state.rows, row)
+    end
+    host.listScroll = state
+    return state
 end
 
 local choiceMenu = nil
@@ -1161,16 +1260,32 @@ end
 
 local function RefreshDenyRows()
     if not denyFrame then return end
-    for i = 1, table.getn(denyRows) do denyRows[i]:Hide(); denyRows[i]:SetParent(nil) end
-    denyRows = {}
-    local y = -72
-    for i = 1, table.getn(denyWorking) do
-        local row = CreateFrame("Frame", nil, denyFrame); row:SetWidth(310); row:SetHeight(22); row:SetPoint("TOPLEFT", denyFrame, "TOPLEFT", 18, y)
-        local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); text:SetPoint("LEFT", row, "LEFT", 2, 0); text:SetWidth(220); text:SetJustifyH("LEFT"); text:SetText(denyWorking[i]); text:SetTextColor(0.90,0.95,0.75)
-        local captured = i
-        MakeButton(row, "X", 24, 246, 0, function() table.remove(denyWorking, captured); RefreshDenyRows() end)
-        table.insert(denyRows, row); y = y - 24
-    end
+    local scroll = C.EnsureDenyListScroll(denyFrame, {
+        width = 310,
+        rowHeight = 24,
+        x = 18,
+        y = -72,
+        createRow = function(parent)
+            local row = CreateFrame("Frame", nil, parent)
+            row:SetWidth(310)
+            row:SetHeight(22)
+            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            row.text:SetPoint("LEFT", row, "LEFT", 2, 0)
+            row.text:SetWidth(220)
+            row.text:SetJustifyH("LEFT")
+            row.text:SetTextColor(0.90,0.95,0.75)
+            MakeButton(row, "X", 24, 246, 0, function()
+                if row.denyIndex then table.remove(denyWorking, row.denyIndex); RefreshDenyRows() end
+            end)
+            return row
+        end,
+        bindRow = function(row, item, index)
+            row.denyIndex = index
+            row.text:SetText(item)
+        end,
+    })
+    scroll.items = denyWorking
+    scroll.Paint()
 end
 
 local function HideAbilitySuggestions()
@@ -1278,7 +1393,7 @@ OpenDenyEditor = function(index)
     local entry = EnsureDB().entries[index]; if not entry or entry.kind ~= "legacy" then SetStatus("Only legacy hires can have custom deny lists."); return end
     denyIndex = index; denyWorking = C.CopyDenyList(entry.denyList)
     if not denyFrame then
-        denyFrame = CreateFrame("Frame", "ShirsRaidBuilderDenyFrame", UIParent); denyFrame:SetWidth(350); denyFrame:SetHeight(280); StylePanelFrame(denyFrame)
+        denyFrame = CreateFrame("Frame", "ShirsRaidBuilderDenyFrame", UIParent); denyFrame:SetWidth(370); denyFrame:SetHeight(280); StylePanelFrame(denyFrame)
         denyFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 20)
         RegisterEscapeFrame(denyFrame)
         denyFrame:SetScript("OnHide", HideAbilitySuggestions)
@@ -1308,40 +1423,53 @@ end
 
 local function RefreshRuleList()
     if not settingsFrame then return end
-    for i = 1, table.getn(settingsFrame.ruleRows or {}) do settingsFrame.ruleRows[i]:Hide(); settingsFrame.ruleRows[i]:SetParent(nil) end
-    settingsFrame.ruleRows = {}; local y = -180
-    local rules = EnsureDB().denyRules
-    for i = 1, table.getn(rules) do
-        local rule = rules[i]; local row = CreateFrame("Button",nil,settingsFrame); row:SetWidth(360); row:SetHeight(30); row:SetPoint("TOPLEFT",settingsFrame,"TOPLEFT",18,y)
-        local text = row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); text:SetPoint("LEFT",row,"LEFT",4,0); text:SetWidth(278)
-        text:SetText((ROLE_LABELS[rule.role] or rule.role) .. " / " .. (CLASS_LABELS[rule.class] or rule.class) .. ": " .. table.concat(rule.abilities, ", ")); text:SetTextColor(0.85,0.90,1.0)
-        -- Clicking a row loads it into the dropdowns; Add then targets by
-        -- those values, never by a remembered index.
-        row:SetScript("OnClick",function()
-            settingsRoleButton.label:SetText(ROLE_LABELS[rule.role] or rule.role)
-            settingsClassButton.options=ClassesForRole(rule.role)
-            settingsClassButton.label:SetText(CLASS_LABELS[rule.class] or rule.class)
-            settingsAbilityInput:SetText("")
-            RefreshAbilitySuggestions(settingsAbilityInput)
-            SetStatus("Selected deny rule. Changing Role or Class adds elsewhere.")
-        end)
-        -- Remove captures the rule table itself; deleting by position let
-        -- one stale click take out the wrong rule after the list shifted.
-        MakeButton(row,"Remove",64,296,0,function()
-            local all=EnsureDB().denyRules
-            for ri=1,table.getn(all) do
-                if all[ri]==rule then table.remove(all,ri) break end
-            end
-            C.ResetDenyRuleEditor()
-            RefreshRuleList(); RefreshComposition(); SetStatus("Removed deny rule. Ready to add another.")
-        end)
-        table.insert(settingsFrame.ruleRows,row); y=y-32
-    end
+    local scroll = C.EnsureDenyListScroll(settingsFrame, {
+        width = 360,
+        rowHeight = 32,
+        x = 18,
+        y = -180,
+        createRow = function(parent)
+            local row = CreateFrame("Button",nil,parent); row:SetWidth(360); row:SetHeight(30)
+            row.text = row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); row.text:SetPoint("LEFT",row,"LEFT",4,0); row.text:SetWidth(278)
+            row.text:SetTextColor(0.85,0.90,1.0)
+            -- Clicking a row loads it into the dropdowns; Add then targets by
+            -- those values, never by a remembered index.
+            row:SetScript("OnClick",function()
+                local rule=row.rule
+                if not rule then return end
+                settingsRoleButton.label:SetText(ROLE_LABELS[rule.role] or rule.role)
+                settingsClassButton.options=ClassesForRole(rule.role)
+                settingsClassButton.label:SetText(CLASS_LABELS[rule.class] or rule.class)
+                settingsAbilityInput:SetText("")
+                RefreshAbilitySuggestions(settingsAbilityInput)
+                SetStatus("Selected deny rule. Changing Role or Class adds elsewhere.")
+            end)
+            -- Remove captures the rule table itself; deleting by position let
+            -- one stale click take out the wrong rule after the list shifted.
+            MakeButton(row,"Remove",64,296,0,function()
+                local rule=row.rule
+                if not rule then return end
+                local all=EnsureDB().denyRules
+                for ri=1,table.getn(all) do
+                    if all[ri]==rule then table.remove(all,ri) break end
+                end
+                C.ResetDenyRuleEditor()
+                RefreshRuleList(); RefreshComposition(); SetStatus("Removed deny rule. Ready to add another.")
+            end)
+            return row
+        end,
+        bindRow = function(row, item)
+            row.rule = item
+            row.text:SetText((ROLE_LABELS[item.role] or item.role) .. " / " .. (CLASS_LABELS[item.class] or item.class) .. ": " .. table.concat(item.abilities, ", "))
+        end,
+    })
+    scroll.items = EnsureDB().denyRules
+    scroll.Paint()
 end
 
 local function OpenSettings()
     if not settingsFrame then
-        settingsFrame=CreateFrame("Frame","ShirsRaidBuilderSettingsFrame",UIParent); settingsFrame:SetWidth(410); settingsFrame:SetHeight(390); StylePanelFrame(settingsFrame); settingsFrame:SetPoint("CENTER",UIParent,"CENTER",0,0)
+        settingsFrame=CreateFrame("Frame","ShirsRaidBuilderSettingsFrame",UIParent); settingsFrame:SetWidth(430); settingsFrame:SetHeight(390); StylePanelFrame(settingsFrame); settingsFrame:SetPoint("CENTER",UIParent,"CENTER",0,0)
         settingsFrame.title=settingsFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); settingsFrame.title:SetPoint("TOP",settingsFrame,"TOP",0,-14)
         RegisterEscapeFrame(settingsFrame)
         settingsFrame:SetScript("OnHide", function() HideAbilitySuggestions(); CloseChoiceMenu() end)
@@ -1393,7 +1521,6 @@ local function OpenSettings()
         addAbility:SetFrameLevel(settingsFrame:GetFrameLevel()+6)
         MakeButton(settingsFrame,"New",64,18,14,C.ResetDenyRuleEditor,true)
         MakeButton(settingsFrame,"Close",64,86,14,function() HideAbilitySuggestions(); settingsFrame:Hide() end,true)
-        settingsFrame.ruleRows={}
     end
     settingsFrame.title:SetText("Deny rules: " .. (DB.currentPreset or "Default")); RefreshRuleList(); settingsFrame:Show()
 end
@@ -1474,20 +1601,29 @@ end
 
 local function RefreshSetupList()
     if not setupFrame then return end
-    for i = 1, table.getn(setupFrame.ruleRows or {}) do setupFrame.ruleRows[i]:Hide(); setupFrame.ruleRows[i]:SetParent(nil) end
-    setupFrame.ruleRows = {}; local y = -236
-    local rules = EnsureDB().setupRules
-    for i = 1, table.getn(rules) do
-        local rule = rules[i]; local row = CreateFrame("Button",nil,setupFrame); row:SetWidth(484); row:SetHeight(28); row:SetPoint("TOPLEFT",setupFrame,"TOPLEFT",18,y)
-        local text = row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); text:SetPoint("LEFT",row,"LEFT",4,0); text:SetWidth(380); text:SetJustifyH("LEFT")
-        text:SetText(SetupSummary(rule)); text:SetTextColor(0.85,0.90,1.0)
-        local captured=i
-        MakeButton(row,"Remove",64,414,2,function()
-            table.remove(EnsureDB().setupRules, captured)
-            RefreshSetupList(); SetStatus("Removed totem/aura rule.")
-        end)
-        table.insert(setupFrame.ruleRows,row); y=y-30
-    end
+    local scroll = C.EnsureDenyListScroll(setupFrame, {
+        width = 484,
+        rowHeight = 30,
+        x = 18,
+        y = -236,
+        createRow = function(parent)
+            local row = CreateFrame("Button",nil,parent); row:SetWidth(484); row:SetHeight(28)
+            row.text = row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); row.text:SetPoint("LEFT",row,"LEFT",4,0); row.text:SetWidth(380); row.text:SetJustifyH("LEFT")
+            row.text:SetTextColor(0.85,0.90,1.0)
+            MakeButton(row,"Remove",64,414,2,function()
+                if not row.setupIndex then return end
+                table.remove(EnsureDB().setupRules, row.setupIndex)
+                RefreshSetupList(); SetStatus("Removed totem/aura rule.")
+            end)
+            return row
+        end,
+        bindRow = function(row, item, index)
+            row.setupIndex = index
+            row.text:SetText(SetupSummary(item))
+        end,
+    })
+    scroll.items = EnsureDB().setupRules
+    scroll.Paint()
 end
 
 local function ShowSetupClassFields()
@@ -1580,7 +1716,6 @@ local function OpenSetup()
             RefreshSetupList(); SetStatus("Saved " .. SetupSummary(rule) .. ".")
         end)
         MakeButton(setupFrame,"Close",64,18,14,function() CloseChoiceMenu(); setupFrame:Hide() end,true)
-        setupFrame.ruleRows={}
         setupFrame:SetScript("OnHide", CloseChoiceMenu)
         RegisterEscapeFrame(setupFrame)
         ShowSetupClassFields()

@@ -10,6 +10,39 @@ assert(table.getn(normalized) == 2)
 assert(normalized[1] == "Lightning Bolt")
 assert(normalized[2] == "Chain Lightning")
 
+assert(C.DENY_LIST_VISIBLE_ROWS == 5)
+assert(not C.DenyListNeedsScrollbar(0))
+assert(not C.DenyListNeedsScrollbar(4))
+assert(C.DenyListNeedsScrollbar(5))
+assert(C.DenyListNeedsScrollbar(12))
+assert(C.DenyListMaxOffset(4) == 0)
+assert(C.DenyListMaxOffset(5) == 0)
+assert(C.DenyListMaxOffset(7) == 2)
+assert(C.ClampDenyListOffset(-3, 9) == 0)
+assert(C.ClampDenyListOffset(9, 7) == 2)
+assert(C.ClampDenyListOffset(1, 7) == 1)
+local thumbH, thumbY = C.DenyListThumb(0, 4, 120)
+assert(thumbH == 0 and thumbY == 0)
+thumbH, thumbY = C.DenyListThumb(0, 5, 120)
+assert(thumbH == 120 and thumbY == 0)
+thumbH, thumbY = C.DenyListThumb(0, 10, 120)
+assert(thumbH == 60 and thumbY == 0)
+thumbH, thumbY = C.DenyListThumb(5, 10, 120)
+assert(thumbH == 60 and thumbY == -60)
+assert(C.DenyListOffsetFromThumb(0, 10, 120) == 0)
+assert(C.DenyListOffsetFromThumb(-60, 10, 120) == 5)
+
+-- FindDenyRule must target the exact role+class pair, never fold an exact
+-- request into an all-roles rule of the same class.
+local findRules = {
+    { role="all", class="warrior", abilities={"Intimidating Shout"} },
+}
+local folded = C.FindDenyRule(findRules, "tank", "warrior")
+assert(folded == nil, "Tank/Warrior add must not reuse the all-roles Warrior rule")
+table.insert(findRules, { role="tank", class="warrior", abilities={"Battle Shout"} })
+assert(C.FindDenyRule(findRules, "tank", "warrior") == findRules[2])
+assert(C.FindDenyRule(findRules, "all", "warrior") == findRules[1])
+
 local legacy = {
     kind = "legacy",
     charName = "Example",

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.65
+
+### Added
+
+- Scrollbars in the deny rules list, the per-character extra denies editor, and the Other Commands rule list: five rows stay visible, and the scrollbar appears once a list holds five or more entries, with mouse wheel, track paging, and thumb dragging
+
+### Fixed
+
+- Adding an ability for one role, such as Battle Shout under Tank Warrior, no longer folds into the All Roles rule of the same class; it creates its own role-specific rule
+- The Other Commands panel shows its saved rules again after they stopped rendering
+
 ## 0.64
 
 ### Added
