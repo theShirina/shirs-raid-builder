@@ -2376,16 +2376,18 @@ local function ExecuteQueue()
         if (nextEntry and IsHeldPhase(nextEntry.phase)) or (currentEntry and IsHeldPhase(currentEntry.phase) and not executeGrinfoExpanded) then
             if not executeGrinfoReady then
                 if not executeGrinfoRequested then
-                    executeGrinfoRequested = true
                     -- Wait out the post-hire window first: a GRINFO answer that
                     -- lands while the last .z addinvite is still processing lists
                     -- companions as of before that hire, so the newest companion
                     -- would be missing from every expanded target list.
+                    -- Evaluate BEFORE committing executeGrinfoRequested so a pending
+                    -- hire cannot leave the flag set with executeWaitStarted stale.
                     local hirePending = (executeHireReadyAt or 0) > 0 and GetTime and (GetTime() < executeHireReadyAt)
                     if hirePending then
                         SetStatus("Finishing the current hire before asking for names.")
                         return
                     end
+                    executeGrinfoRequested = true
                     executeWaitStarted = GetTime and GetTime() or 0
                     RequestCompanionInfo()
                 end
