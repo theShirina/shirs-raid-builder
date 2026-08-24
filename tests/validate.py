@@ -84,7 +84,6 @@ def validate_public_boundary() -> None:
     assert re.search(r"[A-Za-z0-9._%+-]+@(gmail|hotmail|outlook)\.[A-Za-z]+", text, re.IGNORECASE) is None, "personal email found"
     assert ("STEFF" + "IPKH") not in text
     assert ("BEGIN " + "PRIVATE KEY") not in text
-    assert "## Version: 0.61" in (ADDON / "ShirsRaidBuilder.toc").read_text(encoding="utf-8")
 
 
 def main() -> int:
@@ -98,9 +97,14 @@ def main() -> int:
     toc = ADDON / "ShirsRaidBuilder.toc"
     metadata, runtime_files = parse_toc(toc)
     assert metadata.get("Interface") == "11200"
-    assert metadata.get("Version") == "0.61"
+    version = metadata.get("Version", "")
+    assert re.fullmatch(r"\d+\.\d+", version), "invalid TOC version: " + repr(version)
     assert metadata.get("SavedVariables") == "ShirsRaidBuilderDB"
     assert metadata.get("Author") == "Shirina"
+    assert (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").startswith("# Changelog\n\n## " + version + "\n")
+    assert (ADDON / "README.txt").read_text(encoding="utf-8").startswith("Shir's Raid Builder " + version + "\n")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert ("ShirsRaidBuilder-" + version + ".zip") in readme
     assert runtime_files == ["ShirsRaidBuilder_Core.lua", "ShirsRaidBuilder_Abilities.lua", "ShirsRaidBuilder.lua"]
     for relative in runtime_files:
         assert (ADDON / relative).is_file(), relative
@@ -113,7 +117,7 @@ def main() -> int:
 
     build_script = ROOT / "scripts" / "build_release.py"
     run([sys.executable, str(build_script)])
-    release = ROOT / "dist" / ("ShirsRaidBuilder-" + metadata["Version"] + ".zip")
+    release = ROOT / "dist" / ("ShirsRaidBuilder-" + version + ".zip")
     first_zip = release.read_bytes()
     run([sys.executable, str(build_script)])
     second_zip = release.read_bytes()

@@ -1,4 +1,4 @@
--- Shir's Raid Builder 0.61
+-- Shir's Raid Builder core
 -- Clean-room core helpers. Server deny syntax is intentionally configurable.
 
 ShirsRaidBuilderCore = ShirsRaidBuilderCore or {}

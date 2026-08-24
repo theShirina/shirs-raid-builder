@@ -1,7 +1,8 @@
--- Shir's Raid Builder 0.62
+-- Shir's Raid Builder
 -- Independent clean-room implementation.
 
 local C = ShirsRaidBuilderCore
+C.VERSION = type(GetAddOnMetadata) == "function" and GetAddOnMetadata("ShirsRaidBuilder", "Version") or "?"
 local DB = {}
 
 local function BindAccountDB()
@@ -2543,8 +2544,8 @@ function C.ApplyRaidMode()
         if sort then mainFrame.modeBtn.label:SetText("Hire Mode") else mainFrame.modeBtn.label:SetText("Sort Mode") end
     end
     if mainFrame.titleText then
-        if sort then mainFrame.titleText:SetText("Shir's Raid Builder 0.62 - Sort")
-        else mainFrame.titleText:SetText("Shir's Raid Builder 0.62") end
+        if sort then mainFrame.titleText:SetText("Shir's Raid Builder " .. C.VERSION .. " - Sort")
+        else mainFrame.titleText:SetText("Shir's Raid Builder " .. C.VERSION) end
     end
     if mainFrame.accountContent then
         if sort then mainFrame.accountContent:Hide() else mainFrame.accountContent:Show() end
@@ -2651,7 +2652,7 @@ local function CreateMain()
     EnsureDB()
     mainFrame=CreateFrame("Frame","ShirsRaidBuilderMainFrame",UIParent); mainFrame:SetWidth(780); mainFrame:SetHeight(640); mainFrame:SetPoint("CENTER",UIParent,"CENTER",0,0); mainFrame:SetFrameStrata("FULLSCREEN"); mainFrame:SetToplevel(true); mainFrame:SetMovable(true); mainFrame:EnableMouse(true)
     mainFrame:SetBackdrop(PANEL_BG); mainFrame:SetBackdropColor(0.03, 0.04, 0.07, 1.0); mainFrame:SetBackdropBorderColor(0.70, 0.70, 0.70, 1.0)
-    local title=mainFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOP",mainFrame,"TOP",0,-12); title:SetText("Shir's Raid Builder 0.62")
+    local title=mainFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOP",mainFrame,"TOP",0,-12); title:SetText("Shir's Raid Builder " .. C.VERSION)
     mainFrame.titleText = title
     MakeButton(mainFrame,"X",22,736,-8,function() mainFrame:Hide() end)
     local drag=CreateFrame("Frame",nil,mainFrame); drag:SetWidth(500); drag:SetHeight(24); drag:SetPoint("TOP",mainFrame,"TOP",0,-4); drag:EnableMouse(true); drag:SetScript("OnMouseDown",function() mainFrame:StartMoving() end); drag:SetScript("OnMouseUp",function() mainFrame:StopMovingOrSizing() end)
@@ -2744,5 +2745,5 @@ local init=CreateFrame("Frame"); init:RegisterEvent("ADDON_LOADED"); init:Regist
     if event == "ADDON_LOADED" and arg1 and arg1 ~= "ShirsRaidBuilder" then return end
     if event == "PLAYER_ENTERING_WORLD" then RememberPlayer(); if mainFrame then RefreshAccountPanel(); RefreshComposition() end; return end
     BindAccountDB(); EnsureDB()
-    if event == "VARIABLES_LOADED" then RememberPlayer(); HarvestKnownFactions(); EnsureInviteListener(); DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffShir's Raid Builder:|r v0.61 loaded. Type /srb demo.") end
+    if event == "VARIABLES_LOADED" then RememberPlayer(); HarvestKnownFactions(); EnsureInviteListener(); DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffShir's Raid Builder:|r v" .. C.VERSION .. " loaded. Type /srb demo.") end
 end)
