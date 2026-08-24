@@ -1395,18 +1395,11 @@ function C.HireSlotCount(entries)
 end
 
 function C.IsCapturedHirePreset(preset)
-    if type(preset) ~= "table" then return false end
-    if preset.sortLayout then return true end
-    if type(preset.entries) ~= "table" then return false end
-    local guests = 0
-    local normals = 0
-    local i
-    for i = 1, table.getn(preset.entries) do
-        local entry = preset.entries[i]
-        if entry and entry.kind == "guest" then guests = guests + 1 end
-        if entry and entry.kind == "normal" then normals = normals + 1 end
-    end
-    return guests > 0 and normals == 0
+    -- Only the explicit marker counts. Heuristics on entry shapes are unsafe:
+    -- a legitimate hire board with legacy cards plus another player's companion
+    -- (a guest) has the same shape as a captured raid, so guessing here used to
+    -- wipe real hire plans on every relog (moved them to the sort bank).
+    return type(preset) == "table" and preset.sortLayout == true
 end
 
 function C.RescueHirePreset(db)

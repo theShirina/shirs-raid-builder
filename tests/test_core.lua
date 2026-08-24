@@ -572,6 +572,8 @@ assert(C.HireCountName({kind="legacy", charName="Mageown", sourceName="Mageowner
 assert(C.ResolveLegacyHireName({charName="Mageown-lite", sourceName="Mageown"}, {"Shir", "Mageowner", "Longname"}) == "Mageowner")
 assert(C.IsCapturedHirePreset({sortLayout=true, entries={{kind="guest"}}}) == true)
 assert(C.IsCapturedHirePreset({entries={{kind="normal", account="Shir"}}}) == false)
+assert(C.IsCapturedHirePreset({entries={{kind="legacy", charName="Warlocka"}, {kind="guest", account="Friend"}, {kind="player", charName="Me"}}}) == false)
+assert(C.RescueHirePreset({presets={Default={entries={{kind="guest", account="Friend"}}, denyRules={}, setupRules={}}, ZG={entries={}}}, currentPreset="Default", sortPresets={}}) == nil)
 local rescued = {presets={Default={sortLayout=true, entries={{kind="guest", account="Mageowner"}}}, ZG={entries={{kind="normal", account="Shir"}}}}, currentPreset="Default"}
 local moved = C.RescueHirePreset(rescued)
 assert(moved ~= nil and rescued.currentPreset == "ZG")
