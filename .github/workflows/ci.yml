@@ -1,0 +1,36 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build Lua 5.0.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          lua_build="${RUNNER_TEMP}/srb-lua"
+          mkdir -p "$lua_build"
+          curl --fail --silent --show-error --location \
+            https://www.lua.org/ftp/lua-5.0.3.tar.gz \
+            --output "$lua_build/lua-5.0.3.tar.gz"
+          echo "1193a61b0e08acaa6eee0eecf29709179ee49c71baebc59b682a25c3b5a45671  $lua_build/lua-5.0.3.tar.gz" | sha256sum --check --strict
+          tar -xzf "$lua_build/lua-5.0.3.tar.gz" -C "$lua_build"
+          make -C "$lua_build/lua-5.0.3"
+          echo "LUA_ROOT=$lua_build/lua-5.0.3" >> "$GITHUB_ENV"
+
+      - name: Validate addon and release
+        run: |
+          python tests/validate.py \
+            --lua "$LUA_ROOT/bin/lua" \
+            --luac "$LUA_ROOT/bin/luac"

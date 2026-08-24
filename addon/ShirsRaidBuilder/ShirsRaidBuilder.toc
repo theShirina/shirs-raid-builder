@@ -1,0 +1,10 @@
+## Interface: 11200
+## Title: Shir's Raid Builder
+## Notes: Build, hire, configure, and sort Microbot raid groups
+## Author: Shirina
+## Version: 0.61
+## SavedVariables: ShirsRaidBuilderDB
+
+ShirsRaidBuilder_Core.lua
+ShirsRaidBuilder_Abilities.lua
+ShirsRaidBuilder.lua
