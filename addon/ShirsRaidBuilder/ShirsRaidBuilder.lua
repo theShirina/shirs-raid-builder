@@ -2415,6 +2415,20 @@ local function ExecuteQueue()
                     if not ReadyForNext(nextEntry) then return end
                     executeIndex = nextIndex
                 end
+                -- The newest hire can still be missing from the party roster when
+                -- the GRINFO reply lands; expanding then drops exactly that
+                -- companion (the N-1 skip). Wait until every name the server sent
+                -- is visible in the group, or until a bounded grace period ends.
+                local pendingNames = 0
+                local present = SnapshotGroup()
+                for ci = 1, table.getn(executeCompanionList) do
+                    local cname = executeCompanionList[ci] and executeCompanionList[ci].name
+                    if cname and cname ~= "" and not present[cname] then pendingNames = pendingNames + 1 end
+                end
+                if pendingNames > 0 and GetTime and (GetTime() - (executeWaitStarted or 0)) < 12 then
+                    SetStatus("Waiting for " .. pendingNames .. " companion(s) to appear in the group.")
+                    return
+                end
                 ExpandPendingGroupDenies()
                 executeGrinfoExpanded = true
                 executeWaitingNod = false
