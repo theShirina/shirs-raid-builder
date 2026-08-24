@@ -94,7 +94,6 @@ local namePrompt = nil
 local denyRows = {}
 local denyWorking = {}
 local denyIndex = nil
-local settingsRuleIndex = nil
 local settingsAbilityInput = nil
 local abilityMenu = nil
 local abilitySuggestionRows = {}
@@ -196,6 +195,24 @@ end
 
 local function SetStatus(text)
     if statusText then statusText:SetText(text or "") end
+end
+
+-- Deny-rule targeting always resolves from the editor dropdowns at click
+-- time, so changing Role or Class can never leave the next Add writing
+-- into a rule the user can no longer see selected.
+-- Shared through C. to spare the file's local-variable budget (Lua 5.0).
+function C.DenyRuleMatches(rule, role, class)
+    local ruleRole = string.lower(C.Trim(rule.role or ""))
+    return string.lower(C.Trim(rule.class or "")) == string.lower(class)
+        and (ruleRole == string.lower(role) or ruleRole == "all")
+end
+
+function C.FindDenyRule(rules, role, class)
+    for i = 1, table.getn(rules or {}) do
+        local rule = rules[i]
+        if type(rule) == "table" and C.DenyRuleMatches(rule, role, class) then return rule end
+    end
+    return nil
 end
 
 local BUTTON_H = 22
@@ -1167,8 +1184,10 @@ end
 local function ListedDenyNames(input)
     if denyFrame and input == denyFrame.input then return denyWorking end
     if settingsAbilityInput and input == settingsAbilityInput then
-        local rules = EnsureDB().denyRules
-        if settingsRuleIndex and rules[settingsRuleIndex] then return rules[settingsRuleIndex].abilities end
+        local role = RoleValue(settingsRoleButton.label:GetText())
+        local class = ClassValue(settingsClassButton.label:GetText())
+        local rule = C.FindDenyRule(EnsureDB().denyRules, role, class)
+        if rule then return rule.abilities end
     end
     return nil
 end
@@ -1279,7 +1298,6 @@ end
 ShirsRaidBuilder_OpenDenyEditor = OpenDenyEditor
 
 function C.ResetDenyRuleEditor()
-    settingsRuleIndex = nil
     settingsRoleButton.label:SetText("Melee DPS")
     settingsClassButton.options = ClassesForRole("mdps")
     settingsClassButton.label:SetText("Shaman")
@@ -1296,17 +1314,23 @@ local function RefreshRuleList()
         local rule = rules[i]; local row = CreateFrame("Button",nil,settingsFrame); row:SetWidth(360); row:SetHeight(30); row:SetPoint("TOPLEFT",settingsFrame,"TOPLEFT",18,y)
         local text = row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); text:SetPoint("LEFT",row,"LEFT",4,0); text:SetWidth(278)
         text:SetText((ROLE_LABELS[rule.role] or rule.role) .. " / " .. (CLASS_LABELS[rule.class] or rule.class) .. ": " .. table.concat(rule.abilities, ", ")); text:SetTextColor(0.85,0.90,1.0)
-        local captured=i; row:SetScript("OnClick",function()
-            settingsRuleIndex=captured
+        -- Clicking a row loads it into the dropdowns; Add then targets by
+        -- those values, never by a remembered index.
+        row:SetScript("OnClick",function()
             settingsRoleButton.label:SetText(ROLE_LABELS[rule.role] or rule.role)
             settingsClassButton.options=ClassesForRole(rule.role)
             settingsClassButton.label:SetText(CLASS_LABELS[rule.class] or rule.class)
             settingsAbilityInput:SetText("")
             RefreshAbilitySuggestions(settingsAbilityInput)
-            SetStatus("Selected deny rule. Add abilities to update it.")
+            SetStatus("Selected deny rule. Changing Role or Class adds elsewhere.")
         end)
+        -- Remove captures the rule table itself; deleting by position let
+        -- one stale click take out the wrong rule after the list shifted.
         MakeButton(row,"Remove",64,296,0,function()
-            table.remove(EnsureDB().denyRules, captured)
+            local all=EnsureDB().denyRules
+            for ri=1,table.getn(all) do
+                if all[ri]==rule then table.remove(all,ri) break end
+            end
             C.ResetDenyRuleEditor()
             RefreshRuleList(); RefreshComposition(); SetStatus("Removed deny rule. Ready to add another.")
         end)
@@ -1336,14 +1360,18 @@ local function OpenSettings()
         local addAbility=MakeButton(settingsFrame,"Add Ability",86,214,-106,function()
             local v=C.Trim(settingsAbilityInput:GetText())
             if v~="" then
-                local p=EnsureDB(); local role=RoleValue(settingsRoleButton.label:GetText()); local class=ClassValue(settingsClassButton.label:GetText())
-                local idx=settingsRuleIndex or table.getn(p.denyRules)+1
+                local p=EnsureDB()
+                -- Target strictly by what the dropdowns show right now.
+                local role=RoleValue(settingsRoleButton.label:GetText())
+                local class=ClassValue(settingsClassButton.label:GetText())
+                if role~="all" and not C.RoleAllowedForClass(class,role) then
+                    SetStatus(class .. " cannot take the " .. (ROLE_LABELS[role] or role) .. " role.")
+                    return
+                end
                 local lowerV=string.lower(v)
                 for ri = 1, table.getn(p.denyRules) do
                     local rule = p.denyRules[ri]
-                    local ruleRole = string.lower(C.Trim(rule.role or ""))
-                    if string.lower(C.Trim(rule.class or "")) == string.lower(class)
-                        and (ruleRole == role or ruleRole == "all") then
+                    if C.DenyRuleMatches(rule, role, class) then
                         local abilities = C.NormalizeDenyList(rule.abilities or {})
                         for ai = 1, table.getn(abilities) do
                             if string.lower(abilities[ai]) == lowerV then
@@ -1354,10 +1382,11 @@ local function OpenSettings()
                         end
                     end
                 end
-                if not p.denyRules[idx] then p.denyRules[idx]={role=role,class=class,abilities={}} end
-                p.denyRules[idx].role=role; p.denyRules[idx].class=class
-                table.insert(p.denyRules[idx].abilities,v); p.denyRules[idx].abilities=C.NormalizeDenyList(p.denyRules[idx].abilities)
-                settingsRuleIndex=idx; settingsAbilityInput:SetText(""); HideAbilitySuggestions(); RefreshRuleList(); RefreshComposition()
+                local rule = C.FindDenyRule(p.denyRules, role, class)
+                if not rule then rule={role=role,class=class,abilities={}}; table.insert(p.denyRules,rule) end
+                table.insert(rule.abilities,v)
+                rule.abilities=C.NormalizeDenyList(rule.abilities)
+                settingsAbilityInput:SetText(""); HideAbilitySuggestions(); RefreshRuleList(); RefreshComposition()
             end
         end)
         addAbility:SetFrameLevel(settingsFrame:GetFrameLevel()+6)
