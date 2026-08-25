@@ -6,7 +6,7 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-0.66.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.66/ShirsRaidBuilder-0.66.zip) ([SHA256](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.66/ShirsRaidBuilder-0.66.zip.sha256)).
+Download [ShirsRaidBuilder-0.66.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.66/ShirsRaidBuilder-0.66.zip).
 
 ## Before installing
 
