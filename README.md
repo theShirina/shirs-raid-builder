@@ -6,7 +6,7 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-0.66.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.66/ShirsRaidBuilder-0.66.zip).
+Download [ShirsRaidBuilder-0.67.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.67/ShirsRaidBuilder-0.67.zip).
 
 ## Before installing
 
@@ -36,6 +36,7 @@ Profiles are stored in the account-wide `ShirsRaidBuilderDB` SavedVariable.
 - Add named legacy characters with their real hire name and derived `-lite` name
 - Include the current player as a gold board card without treating that card as a hire
 - Drag cards to swap raid slots and collapse groups while editing
+- Move the main window and each subpanel independently
 - Keep separate named profiles, with New, Rename, Delete, and Preview controls
 - Preview the complete command queue without sending anything
 - Stop a running hire or whisper queue

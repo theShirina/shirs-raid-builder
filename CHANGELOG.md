@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.67
+
+### Added
+
+- The main Raid Builder window can be moved by dragging its background as well as its title bar
+- Subpanels can be moved independently, including Add Normal, Add Legacy, Deny Rules, Other Commands, profile prompts, and warnings
+
 ## 0.66
 
 ### Fixed
