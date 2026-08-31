@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.72
+
+Bug-fix release following 0.67. No new user-facing features.
+
+### Fixed
+
+- Running a saved plan again no longer repeats normal hires that are already in the group
+- Group setup and deny commands now reach every matching companion, including duplicate Warlocks or Shamans and Tank Druids
+- Valid Nexus companion responses received before execution are now kept, so group-wide commands no longer get skipped
+- A plan started with the player alone no longer waits for a companion list before hiring
+- Companion discovery refreshes after hires and accepts the response formats used by the client
+- Submenu background clicks no longer start a stuck drag, and the X close buttons remain clickable
+
 ## 0.67
 
 ### Added

@@ -121,6 +121,23 @@ assert(table.getn(parsedSix) == 1)
 assert(parsedSix[1].name == "Unittwo" and parsedSix[1].class == "priest" and parsedSix[1].role == "healer")
 local matchedSix = C.MatchCompanions(parsedSix, "healer", "priest")
 assert(table.getn(matchedSix) == 1 and matchedSix[1] == "Unittwo")
+local grinfo, grinfoOk = C.ParseGrinfoResponse("[nexus] GRINFO:ALL:FULL Lockone:Human:Warlock:RDPS:Lockowner Locktwo:Human:Warlock:RDPS:Lockowner Druidone:NightElf:Druid:Tank:Druidowner")
+assert(grinfoOk and table.getn(grinfo) == 3)
+assert(grinfo[1].name == "Lockone" and grinfo[2].class == "warlock" and grinfo[3].role == "tank")
+local emptyGrinfo, emptyGrinfoOk = C.ParseGrinfoResponse("[nexus] GRINFO:ALL:FULL")
+assert(emptyGrinfoOk and table.getn(emptyGrinfo) == 0)
+local badGrinfo, badGrinfoOk = C.ParseGrinfoResponse("nexus GRINFO:ALL:FULL Lockone:Human:Warlock:RDPS:Lockowner")
+assert(not badGrinfoOk and badGrinfo == nil)
+local bareGrinfo, bareGrinfoOk = C.ParseGrinfoResponse("GRINFO:ALL:FULL Lockone:Human:Warlock:RDPS:Lockowner")
+assert(bareGrinfoOk and table.getn(bareGrinfo) == 1 and bareGrinfo[1].name == "Lockone")
+assert(not C.HasOtherGroupMembers({Shir=true}, "Shir"))
+assert(C.HasOtherGroupMembers({Shir=true, Lockone=true}, "Shir"))
+local coveredInfo = {
+    {name="Lockone", class="Warlock", role="RDPS", owner="Lockowner"},
+    {name="Druidone", class="Druid", role="Tank", owner="Druidowner"},
+}
+assert(C.InfoCoversGroup({Shir=true, Lockone=true, Druidone=true}, "Shir", coveredInfo))
+assert(not C.InfoCoversGroup({Shir=true, Lockone=true, Missing=true}, "Shir", coveredInfo))
 local expanded = C.ExpandRoleDenies({lateQueue[3]}, parsedSix)
 assert(table.getn(expanded) == 1)
 assert(expanded[1].target == "Unittwo" and expanded[1].command == "deny add Holy Nova")
@@ -174,6 +191,45 @@ local setupQueue = C.BuildQueue({entries={{kind="normal", account="Longname", ti
 assert(setupQueue[1].kind == "normal")
 assert(setupQueue[2].phase == "class-setup" and setupQueue[2].command == "set totem Strength of Earth Totem")
 
+-- Every supported class must receive matching group denies; duplicate classes
+-- must fan out independently, not stop after the first matching character.
+local classMatrix = {
+    {name="Warriorone", class="warrior", role="tank"},
+    {name="Paladinone", class="paladin", role="healer"},
+    {name="Hunterone", class="hunter", role="rdps"},
+    {name="Warlockone", class="warlock", role="rdps"},
+    {name="Warlocktwo", class="warlock", role="rdps"},
+    {name="Priestone", class="priest", role="healer"},
+    {name="Druidone", class="druid", role="tank"},
+    {name="Shamanone", class="shaman", role="mdps"},
+    {name="Shamantwo", class="shaman", role="mdps"},
+    {name="Rogueone", class="rogue", role="mdps"},
+    {name="Mageone", class="mage", role="rdps"},
+}
+local matrixRules = {}
+for mi = 1, table.getn(classMatrix) do
+    table.insert(matrixRules, {role="all", class=classMatrix[mi].class, abilities={"Matrix " .. classMatrix[mi].class}})
+end
+local matrixDenies = C.ExpandRoleDenies(C.BuildGroupDenyPlan(matrixRules), classMatrix)
+assert(table.getn(matrixDenies) == table.getn(classMatrix))
+local matrixSeen = {}
+for mi = 1, table.getn(matrixDenies) do
+    matrixSeen[matrixDenies[mi].target] = true
+end
+for mi = 1, table.getn(classMatrix) do assert(matrixSeen[classMatrix[mi].name]) end
+local matrixSetup = C.ExpandClassSetup(C.BuildClassSetupPlan({
+    {class="shaman", role="all", earth="Strength of Earth Totem"},
+    {class="paladin", role="all", aura="Devotion Aura"},
+    {class="hunter", role="all", aspect="Aspect of the Hawk"},
+    {class="warlock", role="all", pet="off"},
+    {class="mage", role="all", magic="Amplify"},
+}), classMatrix)
+assert(table.getn(matrixSetup) == 7)
+local setupSeen = {}
+for mi = 1, table.getn(matrixSetup) do setupSeen[matrixSetup[mi].target] = true end
+assert(setupSeen["Shamanone"] and setupSeen["Shamantwo"] and setupSeen["Paladinone"])
+assert(setupSeen["Hunterone"] and setupSeen["Warlockone"] and setupSeen["Warlocktwo"] and setupSeen["Mageone"])
+
 local normal = {
     kind = "normal",
     account = "Longname",
@@ -216,6 +272,35 @@ local petLegacy = {kind="legacy", sourceName="Warlocka", charName="Warlocka", cl
 local petQueue = C.BuildQueue({entries={petLegacy}})
 assert(petQueue[1].kind == "hire")
 assert(petQueue[2].phase == "legacy-setup" and petQueue[2].command == "set pet voidwalker" and petQueue[2].target == "Warlock-lite")
+
+-- Existing normal hires must be consumed one-for-one by owner/class/role,
+-- including duplicate hires from the same account and class.
+local existingHireEntries = {
+    {kind="normal", account="Lockowner", class="warlock", role="rdps"},
+    {kind="normal", account="Lockowner", class="warlock", role="rdps"},
+    {kind="normal", account="Druidowner", class="druid", role="tank"},
+}
+local existingHireQueue = C.BuildQueue({
+    entries=existingHireEntries,
+    denyRules={{role="all", class="warlock", abilities={"Drain Soul"}}},
+})
+local existingInfo = {
+    {name="Lockone", class="Warlock", role="RDPS", owner="Lockowner"},
+    {name="Locktwo", class="Warlock", role="RDPS", owner="Lockowner"},
+    {name="Druidone", class="Druid", role="Tank", owner="Druidowner"},
+}
+local filteredExisting, skippedExisting = C.FilterExistingNormalHires(existingHireQueue, existingHireEntries, existingInfo)
+assert(skippedExisting == 3)
+assert(table.getn(filteredExisting) == 1)
+for fi = 1, table.getn(filteredExisting) do
+    assert(filteredExisting[fi].kind ~= "normal")
+end
+local partialInfo = {
+    {name="Lockone", class="Warlock", role="RDPS", owner="Lockowner"},
+}
+local filteredPartial, skippedPartial = C.FilterExistingNormalHires(existingHireQueue, existingHireEntries, partialInfo)
+assert(skippedPartial == 1)
+assert(table.getn(filteredPartial) == 3)
 
 local mixed = {
     {name="Bolt", class="shaman", role="healer"},

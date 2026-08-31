@@ -304,6 +304,55 @@ function C.ParseCompanionInfo(text)
     return companions
 end
 
+function C.ParseGrinfoResponse(text)
+    local source = C.Trim(text)
+    local _, _, payload = string.find(source, "^%[nexus%]%s+GRINFO:ALL:FULL%s*(.*)$")
+    if payload == nil then
+        _, _, payload = string.find(source, "^GRINFO:ALL:FULL%s*(.*)$")
+    end
+    if payload == nil then return nil, false end
+    if C.Trim(payload) == "" then return {}, true end
+    local companions = C.ParseCompanionInfo(payload)
+    if table.getn(companions) == 0 then return nil, false end
+    return companions, true
+end
+
+function C.HasOtherGroupMembers(snapshot, playerName)
+    if type(snapshot) ~= "table" then return false end
+    local me = string.lower(C.Trim(playerName))
+    local name
+    for name in pairs(snapshot) do
+        if string.lower(C.Trim(name)) ~= me then return true end
+    end
+    return false
+end
+
+function C.InfoCoversGroup(snapshot, playerName, info)
+    if type(snapshot) ~= "table" or type(info) ~= "table" then return false end
+    local me = string.lower(C.Trim(playerName))
+    local present = {}
+    local otherCount = 0
+    local name
+    for name in pairs(snapshot) do
+        local lower = string.lower(C.Trim(name))
+        if lower ~= "" and lower ~= me then
+            present[lower] = true
+            otherCount = otherCount + 1
+        end
+    end
+    if otherCount == 0 then return false end
+    local covered = {}
+    local coveredCount = 0
+    for i = 1, table.getn(info) do
+        local lower = string.lower(C.Trim(info[i] and info[i].name))
+        if present[lower] and not covered[lower] then
+            covered[lower] = true
+            coveredCount = coveredCount + 1
+        end
+    end
+    return coveredCount == otherCount
+end
+
 function C.MatchCompanions(companions, role, class)
     local result = {}
     local wantRole = C.NormalizeRoleLabel(role)
@@ -674,6 +723,41 @@ function C.BuildQueue(preset)
     end
     for i = 1, table.getn(lateWhispers) do table.insert(queue, lateWhispers[i]) end
     return queue
+end
+
+function C.NormalHireMatchesInfo(entry, record)
+    if type(entry) ~= "table" or entry.kind ~= "normal" or type(record) ~= "table" then return false end
+    local wantedName = C.Trim(entry.companionName)
+    local recordName = C.Trim(record.name)
+    if wantedName ~= "" and string.lower(wantedName) == string.lower(recordName) then return true end
+    if C.Trim(entry.account) == "" or C.Trim(entry.class) == "" or C.Trim(entry.role) == "" then return false end
+    return string.lower(C.Trim(entry.account)) == string.lower(C.Trim(record.owner))
+        and C.NormalizeClassLabel(entry.class) == C.NormalizeClassLabel(record.class)
+        and C.NormalizeRoleLabel(entry.role) == C.NormalizeRoleLabel(record.role)
+end
+
+function C.FilterExistingNormalHires(queue, entries, info)
+    local result = {}
+    local used = {}
+    local skipped = 0
+    if type(queue) ~= "table" then return result, skipped end
+    for i = 1, table.getn(queue) do
+        local item = queue[i]
+        local omit = false
+        if item and item.kind == "normal" and type(entries) == "table" and type(info) == "table" then
+            local entry = entries[item.sourceEntryIndex]
+            for ri = 1, table.getn(info) do
+                if not used[ri] and C.NormalHireMatchesInfo(entry, info[ri]) then
+                    used[ri] = true
+                    omit = true
+                    skipped = skipped + 1
+                    break
+                end
+            end
+        end
+        if not omit then table.insert(result, item) end
+    end
+    return result, skipped
 end
 
 function C.IsFilledEntry(entry)
