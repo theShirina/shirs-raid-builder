@@ -226,8 +226,14 @@ local function StylePanelFrame(frame)
     frame:SetFrameLevel(80)
     frame:SetMovable(true)
     frame:EnableMouse(true)
-    frame:SetScript("OnMouseDown", function() frame:StartMoving() end)
-    frame:SetScript("OnMouseUp", function() frame:StopMovingOrSizing() end)
+    frame.dragBar = CreateFrame("Frame", nil, frame)
+    frame.dragBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -4)
+    frame.dragBar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -40, -4)
+    frame.dragBar:SetHeight(24)
+    frame.dragBar:EnableMouse(true)
+    frame.dragBar:RegisterForDrag("LeftButton")
+    frame.dragBar:SetScript("OnDragStart", function() frame:StartMoving() end)
+    frame.dragBar:SetScript("OnDragStop", function() frame:StopMovingOrSizing() end)
     frame:SetBackdrop(PANEL_BG)
     frame:SetBackdropColor(0.03, 0.04, 0.07, 1.0)
     frame:SetBackdropBorderColor(0.70, 0.70, 0.70, 1.0)
@@ -2072,37 +2078,18 @@ local function RequestCompanionInfo()
 end
 
 local function HandleCompanionInfoMessage()
-    if (not executing) and (not C.sortWaiting) then return end
     local raw = tostring(arg1 or "")
-    if arg2 and arg2 ~= "" then raw = raw .. " " .. tostring(arg2) end
-    local startPos, endPos = string.find(raw, "%[nexus%]")
-    if not startPos then
-        if string.find(raw, "GRINFO:") then
-            startPos = 0
-            endPos = 0
-        else
-            return
-        end
-    end
     if arg3 and arg3 ~= "" and arg3 ~= "UNKNOWN" and arg3 ~= "BATTLEGROUND" then return end
-    local response = raw
-    if endPos and endPos > 0 then response = string.sub(raw, endPos + 2) end
-    response = C.Trim(response)
-    if not string.find(response, "GRINFO:") then return end
-    if not string.find(response, ":FULL") then return end
-    if executeGrinfoReady then return end
-    local _, prefEnd = string.find(string.lower(response), "^nexus%s+")
-    if prefEnd then response = C.Trim(string.sub(response, prefEnd + 1)) end
-    local space = string.find(response, " ")
-    if not space then return end
-    local payload = C.Trim(string.sub(response, space + 1))
-    if payload == "" then
-        executeCompanionList = {}
-        executeGrinfoReady = true
-        Chat("The server returned no companions.")
-        return
+    local companions, valid = C.ParseGrinfoResponse(raw)
+    if not valid and arg2 and arg2 ~= "" and arg2 ~= raw then
+        companions, valid = C.ParseGrinfoResponse(arg2)
     end
-    executeCompanionList = C.ParseCompanionInfo(payload)
+    if not valid then return end
+    C.latestCompanionList = companions
+    C.latestCompanionInfoAt = GetTime and GetTime() or 0
+    if (not executing) and (not C.sortWaiting) then return end
+    if executeGrinfoReady then return end
+    executeCompanionList = companions
     executeGrinfoReady = true
     Chat("Received " .. table.getn(executeCompanionList) .. " companion record(s) from the server.")
 end
@@ -2437,7 +2424,13 @@ local function NoteCommandSent(entry)
         executeNodName = ""
         executeNodStarted = 0
         executeWhisperGap = 0
-        if C.IsHireCommand(entry) then executeHireReadyAt = (GetTime and GetTime() or 0) + RandomHireDelay() end
+        if C.IsHireCommand(entry) then
+            executeGrinfoReady = false
+            executeCompanionList = {}
+            executeGrinfoRequested = false
+            C.grinfoAskedAt = nil
+            executeHireReadyAt = (GetTime and GetTime() or 0) + RandomHireDelay()
+        end
     end
 end
 
@@ -2511,14 +2504,68 @@ local function ExecuteQueue()
     if executing then SetStatus("Queue is already running."); return end
     if C.whisperRun then executeQueue = C.BuildWhisperQueue(EnsureDB()) else executeQueue = C.BuildQueue(EnsureDB()) end
     if table.getn(executeQueue) == 0 then SetStatus("Queue is empty."); C.whisperRun = nil; return end
-    executing = true; executeIndex = 1; executeElapsed = 0; executeFrames = 0; executeHireReadyAt = 0; executeWaitingNod = false; executeNodReady = false; executeNodName = ""; executeNodStarted = 0; executeWhisperGap = 0; executeWaitElapsed = 0; executeWaitStarted = 0; executePartyBefore = nil; executeCompanions = {}; executeBaseline = SnapshotGroup(); executeCompanionList = {}; executeGrinfoRequested = false; executeGrinfoReady = false; executeGrinfoExpanded = false
+    executing = true; executeIndex = 1; executeElapsed = 0; executeFrames = 0; executeHireReadyAt = 0; executeWaitingNod = false; executeNodReady = false; executeNodName = ""; executeNodStarted = 0; executeWhisperGap = 0; executeWaitElapsed = 0; executeWaitStarted = 0; executePartyBefore = nil; executeCompanions = {}; executeBaseline = SnapshotGroup(); executeCompanionList = {}; executeGrinfoRequested = false; executeGrinfoReady = false; executeGrinfoExpanded = false; C.executePreflightStarted = 0; C.executePreflightComplete = false
     if math.randomseed then math.randomseed((GetTime and GetTime() or 0) * 1000) end
-    SendCurrentQueueEntry()
-    if C.whisperRun then SetStatus("Whispering 1/" .. table.getn(executeQueue) .. ".")
-    else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Pacing hires at 7.5-8.5s.") end
+    local needsPreflight = false
+    local hasHire = false
+    local hasNormalHire = false
+    for qi = 1, table.getn(executeQueue) do
+        if executeQueue[qi].kind == "normal" or executeQueue[qi].kind == "hire" then hasHire = true end
+        if executeQueue[qi].kind == "normal" then hasNormalHire = true end
+    end
+    if hasNormalHire and C.HasOtherGroupMembers(executeBaseline, UnitName and UnitName("player") or "") then
+        needsPreflight = true
+    end
+    if (needsPreflight or not hasHire) and C.InfoCoversGroup(executeBaseline, UnitName and UnitName("player") or "", C.latestCompanionList) then
+        executeCompanionList = C.latestCompanionList
+        executeGrinfoReady = true
+    end
+    if needsPreflight then
+        if not executeGrinfoReady then
+            C.executePreflightStarted = GetTime and GetTime() or 0
+            C.grinfoAskedAt = nil
+            RequestCompanionInfo()
+            SetStatus("Reading the current companion list before hiring.")
+        else
+            SetStatus("Checking the current companion list before hiring.")
+        end
+    else
+        C.executePreflightComplete = true
+        SendCurrentQueueEntry()
+        if C.whisperRun then SetStatus("Whispering 1/" .. table.getn(executeQueue) .. ".")
+        else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Pacing hires at 7.5-8.5s.") end
+    end
     if not executeFrame then executeFrame = CreateFrame("Frame") end
     executeFrame:SetScript("OnUpdate", function()
         if not executing then return end
+        if not C.executePreflightComplete then
+            if executeGrinfoReady then
+                local filtered, skipped = C.FilterExistingNormalHires(executeQueue, EnsureDB().entries, executeCompanionList)
+                executeQueue = filtered
+                C.executePreflightComplete = true
+                executeGrinfoRequested = false
+                executeGrinfoReady = false
+                executeCompanionList = {}
+                C.grinfoAskedAt = nil
+                if skipped > 0 then Chat("Skipped " .. skipped .. " normal hire(s) already present in the group.") end
+                if table.getn(executeQueue) == 0 then
+                    FinishExecute("Execution complete. All saved hires were already present.")
+                    return
+                end
+                SendCurrentQueueEntry()
+                if C.whisperRun then SetStatus("Whispering 1/" .. table.getn(executeQueue) .. ".")
+                else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Pacing hires at 7.5-8.5s.") end
+                return
+            end
+            local preflightWaited = 0
+            if GetTime then preflightWaited = GetTime() - (C.executePreflightStarted or 0) end
+            if preflightWaited >= 8 then
+                FinishExecute("Could not read the current companion list. No hires were sent.")
+                return
+            end
+            SetStatus("Waiting for the current companion list before hiring.")
+            return
+        end
         local nextIndex = executeIndex + 1
         local nextEntry = executeQueue[nextIndex]
         local currentEntry = executeQueue[executeIndex]
