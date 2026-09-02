@@ -437,6 +437,24 @@ function C.BuildMagicCommand(name)
     return nil
 end
 
+function C.BuildGrowlCommand(policy)
+    local value = string.lower(C.Trim(policy))
+    if value == "" or value == "(none)" or value == "unchanged" then return nil end
+    if value == "deny" then return "deny add growl" end
+    if value == "allow" then return "deny remove growl" end
+    return nil
+end
+
+function C.BuildDrinkCommand(percentage)
+    if percentage == nil then return nil end
+    local value = tostring(percentage)
+    if value == "" or value == "(none)" or string.lower(value) == "unchanged" then return nil end
+    if not string.find(value, "^%d+$") then return nil end
+    local number = tonumber(value)
+    if not number or number < 1 or number > 100 then return nil end
+    return "set drink " .. value
+end
+
 function C.LegacyNameSet(entries)
     local set = {}
     if type(entries) ~= "table" then return set end
@@ -461,16 +479,21 @@ function C.OrderCompanionThenLegacy(names, legacySet)
     return companions, legacy
 end
 
-function C.MatchCompanionsScoped(companions, class, role)
+function C.MatchCompanionsScoped(companions, class, role, spec)
     local wantClass = C.NormalizeClassLabel(class)
     local wantRole = C.NormalizeRoleLabel(role)
+    local wantSpec = string.lower(C.Trim(spec))
     local result = {}
     if type(companions) ~= "table" or wantClass == "" then return result end
     local anyRole = wantRole == "" or wantRole == "all"
+    local anySpec = wantSpec == "" or wantSpec == "all"
     for i = 1, table.getn(companions) do
         local companion = companions[i]
         if companion.class == wantClass and C.Trim(companion.name) ~= "" then
-            if anyRole or companion.role == wantRole then table.insert(result, companion.name) end
+            if (anyRole or companion.role == wantRole)
+                and (anySpec or string.lower(C.Trim(companion.spec)) == wantSpec) then
+                table.insert(result, companion.name)
+            end
         end
     end
     return result
@@ -486,21 +509,28 @@ function C.BuildClassSetupPlan(rules)
         if role == "" then role = "all" end
         local spec = string.lower(C.Trim(rule.spec))
         if spec == "" then spec = "all" end
+        -- GRINFO has no specialization field. Do not turn a stored
+        -- spec-specific rule into a class/role-wide command.
+        if spec ~= "all" then
+            spec = nil
+        end
         local commands = {}
-        if class == "shaman" then
+        if spec == "all" and class == "shaman" then
             table.insert(commands, C.BuildTotemCommand(rule.earth))
             table.insert(commands, C.BuildTotemCommand(rule.fire))
             table.insert(commands, C.BuildTotemCommand(rule.water))
             table.insert(commands, C.BuildTotemCommand(rule.air))
-        elseif class == "paladin" then
+        elseif spec == "all" and class == "paladin" then
             table.insert(commands, C.BuildAuraCommand(rule.aura))
-        elseif class == "hunter" then
+        elseif spec == "all" and class == "hunter" then
             table.insert(commands, C.BuildAspectCommand(rule.aspect))
             table.insert(commands, C.BuildPetCommand(rule.pet))
-        elseif class == "warlock" then
+            table.insert(commands, C.BuildGrowlCommand(rule.growl))
+        elseif spec == "all" and class == "warlock" then
             table.insert(commands, C.BuildPetCommand(rule.pet))
-        elseif class == "mage" then
+        elseif spec == "all" and class == "mage" then
             table.insert(commands, C.BuildMagicCommand(rule.magic))
+            table.insert(commands, C.BuildDrinkCommand(rule.drink))
         end
         for ci = 1, table.getn(commands) do
             if commands[ci] then
@@ -526,9 +556,9 @@ function C.ExpandNamedWhispers(items, companions, leftoverSet, phase)
     if type(items) ~= "table" then return result end
     for i = 1, table.getn(items) do
         local item = items[i]
-        local names = C.MatchCompanionsScoped(companions, item.class or item.role and item.class, item.role)
+        local names = C.MatchCompanionsScoped(companions, item.class or item.role and item.class, item.role, item.spec)
         if item.phase == "role-class-final" or (item.role and item.class and item.ability) then
-            names = C.MatchCompanionsScoped(companions, item.class, item.role)
+            names = C.MatchCompanionsScoped(companions, item.class, item.role, item.spec)
         end
         local first, second = C.OrderCompanionThenLegacy(names, leftoverSet)
         local function Emit(name, dest)

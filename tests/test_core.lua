@@ -162,12 +162,67 @@ assert(C.BuildPetCommand("felhunter") == "set pet felhunter")
 assert(C.BuildMagicCommand("None") == "set magic none")
 assert(C.BuildMagicCommand("Amplify") == "set magic amplify")
 assert(C.BuildMagicCommand("Dampen Magic") == "set magic dampen")
+assert(C.BuildGrowlCommand(nil) == nil)
+assert(C.BuildGrowlCommand("") == nil)
+assert(C.BuildGrowlCommand("(none)") == nil)
+assert(C.BuildGrowlCommand("unchanged") == nil)
+assert(C.BuildGrowlCommand("Deny") == "deny add growl")
+assert(C.BuildGrowlCommand("Allow") == "deny remove growl")
+assert(C.BuildDrinkCommand(nil) == nil)
+assert(C.BuildDrinkCommand("") == nil)
+assert(C.BuildDrinkCommand("(none)") == nil)
+assert(C.BuildDrinkCommand("unchanged") == nil)
+assert(C.BuildDrinkCommand("1") == "set drink 1")
+assert(C.BuildDrinkCommand("50") == "set drink 50")
+assert(C.BuildDrinkCommand("100") == "set drink 100")
+assert(C.BuildDrinkCommand("0") == nil)
+assert(C.BuildDrinkCommand("101") == nil)
+assert(C.BuildDrinkCommand("50.5") == nil)
+assert(C.BuildDrinkCommand(" 50") == nil)
+assert(C.BuildDrinkCommand("50 ") == nil)
 local magePlan = C.BuildClassSetupPlan({{class="mage", role="all", magic="Amplify"}})
 assert(table.getn(magePlan) == 1 and magePlan[1].command == "set magic amplify")
+local mageDrinkPlan = C.BuildClassSetupPlan({{class="mage", role="rdps", drink="50"}})
+assert(table.getn(mageDrinkPlan) == 1 and mageDrinkPlan[1].command == "set drink 50")
 local hunterPlan = C.BuildClassSetupPlan({{class="hunter", role="all", aspect="Aspect of the Hawk", pet="wolf"}})
 assert(table.getn(hunterPlan) == 2)
 assert(hunterPlan[1].command == "set aspect Aspect of the Hawk")
 assert(hunterPlan[2].command == "set pet wolf")
+local hunterGrowlPlan = C.BuildClassSetupPlan({{class="hunter", role="tank", growl="Deny"}})
+assert(table.getn(hunterGrowlPlan) == 1 and hunterGrowlPlan[1].command == "deny add growl")
+local specSetupPlan = C.BuildClassSetupPlan({{class="hunter", role="tank", spec="beastmastery", growl="Deny"}})
+assert(table.getn(specSetupPlan) == 0, "spec-specific setup rules must not be planned")
+local targetedSetup = C.ExpandClassSetup(C.BuildClassSetupPlan({
+    {class="hunter", role="tank", growl="Allow"},
+    {class="mage", role="rdps", drink="25"},
+}), {
+    {name="Tankhunter", class="hunter", role="tank"},
+    {name="Otherhunter", class="hunter", role="rdps"},
+    {name="Combatmage", class="mage", role="rdps"},
+    {name="Healmage", class="mage", role="healer"},
+})
+assert(table.getn(targetedSetup) == 2)
+assert(targetedSetup[1].target == "Tankhunter" and targetedSetup[1].command == "deny remove growl")
+assert(targetedSetup[2].target == "Combatmage" and targetedSetup[2].command == "set drink 25")
+local specTargetedRules = {
+    {class="hunter", role="all", spec="beastmastery", growl="Deny"},
+}
+local specTargetedSetup = C.ExpandClassSetup(C.BuildClassSetupPlan(specTargetedRules), {
+    {name="Beastmaster", class="hunter", role="rdps", spec="beastmastery"},
+    {name="Marksmanship", class="hunter", role="rdps", spec="marksmanship"},
+})
+assert(table.getn(specTargetedSetup) == 0, "spec-specific setup rules must not target synthetic specs")
+-- GRINFO carries name, race, class, role, optional tier, and owner; it does
+-- not carry a trustworthy specialization. Spec-specific setup rules must be
+-- disabled through the real parser-to-expansion path rather than matching no
+-- real records by accident.
+local grinfoSpec, grinfoSpecOk = C.ParseGrinfoResponse("[nexus] GRINFO:ALL:FULL Beastmaster:NightElf:Hunter:RDPS:Uncommon:Owner Marksmanship:NightElf:Hunter:RDPS:Uncommon:Owner")
+assert(grinfoSpecOk and grinfoSpec[1].spec == nil and grinfoSpec[2].spec == nil)
+assert(table.getn(C.BuildClassSetupPlan(specTargetedRules)) == 0, "spec-specific setup rules must be disabled at plan build")
+local disabledSpecSetup = C.ExpandClassSetup(C.BuildClassSetupPlan({
+    {class="hunter", role="all", spec="beastmastery", growl="Deny"},
+}), grinfoSpec)
+assert(table.getn(disabledSpecSetup) == 0, "spec-specific setup rules must be disabled without GRINFO spec data")
 local warlockPlan = C.BuildClassSetupPlan({{class="warlock", role="rdps", pet="off"}})
 assert(table.getn(warlockPlan) == 1 and warlockPlan[1].command == "set pet off")
 local orderedFirst, orderedSecond = C.OrderCompanionThenLegacy({"Bolt", "Longnam-lite", "Storm"}, {["Longnam-lite"]=true})
