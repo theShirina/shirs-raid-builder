@@ -13,11 +13,6 @@ This release adds companion setup controls.
 
 This release fixes saved-plan and roster handling issues.
 
-### Added
-
-- Hunter setup rules can allow or deny Growl
-- Mage setup rules can set a drink threshold in 10% increments from 10% to 100%
-
 ### Fixed
 
 - Running a saved plan again no longer repeats normal hires that are already in the group
