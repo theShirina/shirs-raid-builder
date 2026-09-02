@@ -2,7 +2,7 @@
 
 Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 1.12. It also saves live raid layouts, sends companion setup commands, and arranges raid subgroups at a safe pace.
 
-> **Testing release:** this addon can send commands that spend gold. Back up `WTF`, use **Preview** before **Execute**, and start with a small plan.
+> **Safety:** this addon can send commands that spend gold. Back up `WTF`, use **Preview** before **Execute**, and start with a small plan.
 
 ## Download
 
@@ -66,18 +66,6 @@ Sort mode has its own profiles and never sends hiring commands.
 - Attempt within-group slot ordering through a temporary empty subgroup
 - Continue through later groups when one exact-order pass is unavailable
 - Send deny and setup whispers without hiring
-
-## Current test limits
-
-The core planner and Lua 5.0.3 checks pass, but these larger live cases still need more community testing:
-
-- Full 40-member raid sorting
-- Exact member order when no empty temporary subgroup exists
-- Full hiring plans with many setup and deny whispers
-- Large numbers of saved profiles
-- Interrupted runs, server lag, and unusual companion data
-
-The client controls the visible order inside each Blizzard raid subgroup. Group membership sorting is reliable in the tested cases, but exact within-group order may remain partial.
 
 ## Build and test
 
