@@ -103,10 +103,7 @@ This release fixes saved-plan and roster handling issues.
 - Sort-mode Whispers for setup and deny commands without hiring
 - Symmetrical mode controls, tooltips, Escape handling, and submenu click blocking
 
-### Known limits
+### Notes
 
 - Exact order inside Blizzard raid subgroups depends on the client and may remain partial
-- Full 40-member sorting has not had broad live testing
-- Full hiring plans with many whisper commands have not had broad live testing
-- Very large profile collections have not had broad live testing
 - Hiring commands can spend gold; Preview and a SavedVariables backup are strongly recommended
