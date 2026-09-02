@@ -1542,8 +1542,10 @@ local AIR_TOTEMS = {"(none)","Windfury Totem","Grace of Air Totem","Grounding To
 local PALADIN_AURAS = {"(none)","Devotion Aura","Retribution Aura","Sanctity Aura","Concentration Aura","Fire Resistance Aura","Frost Resistance Aura","Shadow Resistance Aura","cancel"}
 local HUNTER_ASPECTS = {"(none)","AI Default (Clear Setting)","Aspect of the Hawk","Aspect of the Cheetah","Aspect of the Pack","Aspect of the Wild"}
 local HUNTER_PETS = {"(none)","On","Off","Wolf","Cat","Bear","Crab","Gorilla","Bird","Boar","Bat","Croc","Spider","Owl","Strider","Scorpid","Serpent","Raptor","Turtle","Hyena"}
+C.HUNTER_GROWL = {"(none)","Deny","Allow"}
 local WARLOCK_PETS = {"(none)","On","Off","Imp","Voidwalker","Succubus","Felhunter"}
 local MAGE_MAGIC = {"(none)","None","Amplify","Dampen"}
+C.MAGE_DRINK = {"(none)","10%","20%","30%","40%","50%","60%","70%","80%","90%","100%"}
 
 local function ApplyValue(display)
     if display == "All" then return "all" end
@@ -1568,21 +1570,14 @@ local function SetupApplyOptions(class)
     return result
 end
 
-local function SetupSpecOptions(class)
-    local result = {"All"}
-    local specs = SPECS[class] or {"default"}
-    for i = 1, table.getn(specs) do table.insert(result, SPEC_LABELS[specs[i]] or specs[i]) end
-    return result
-end
-
 local function SetupSummary(rule)
     local who = ApplyLabel(rule.role) .. " " .. (CLASS_LABELS[rule.class] or rule.class)
-    if rule.spec and rule.spec ~= "" and rule.spec ~= "all" then who = who .. " / " .. (SPEC_LABELS[rule.spec] or rule.spec) end
     if rule.class == "paladin" then return who .. ": " .. (rule.aura or "(none)") end
     if rule.class == "hunter" then
         local parts = {}
         if rule.aspect and rule.aspect ~= "" then table.insert(parts, rule.aspect) end
         if rule.pet and rule.pet ~= "" then table.insert(parts, "Pet " .. rule.pet) end
+        if rule.growl and rule.growl ~= "" then table.insert(parts, "Growl " .. rule.growl) end
         if table.getn(parts) == 0 then return who end
         return who .. ": " .. table.concat(parts, ", ")
     end
@@ -1591,7 +1586,10 @@ local function SetupSummary(rule)
         return who
     end
     if rule.class == "mage" then
-        if rule.magic and rule.magic ~= "" then return who .. ": Magic " .. rule.magic end
+        local parts = {}
+        if rule.magic and rule.magic ~= "" then table.insert(parts, "Magic " .. rule.magic) end
+        if rule.drink and rule.drink ~= "" then table.insert(parts, "Drink " .. rule.drink .. "%") end
+        if table.getn(parts) > 0 then return who .. ": " .. table.concat(parts, ", ") end
         return who
     end
     local parts = {}
@@ -1641,20 +1639,20 @@ local function ShowSetupClassFields()
     local class = ClassValue(setupFrame.classButton.label:GetText())
     setupFrame.applyButton.options = SetupApplyOptions(class)
     setupFrame.applyButton.label:SetText(PickListed(setupFrame.applyButton.options, setupFrame.applyButton.label:GetText()))
-    setupFrame.specButton.options = SetupSpecOptions(class)
-    setupFrame.specButton.label:SetText(PickListed(setupFrame.specButton.options, "All"))
-    setupFrame.earthButton:Hide(); setupFrame.fireButton:Hide(); setupFrame.waterButton:Hide(); setupFrame.airButton:Hide(); setupFrame.auraButton:Hide(); setupFrame.aspectButton:Hide(); setupFrame.petButton:Hide(); setupFrame.magicButton:Hide()
-    setupFrame.earthCaption:Hide(); setupFrame.fireCaption:Hide(); setupFrame.waterCaption:Hide(); setupFrame.airCaption:Hide(); setupFrame.auraCaption:Hide(); setupFrame.aspectCaption:Hide(); setupFrame.petCaption:Hide(); setupFrame.magicCaption:Hide()
+    setupFrame.earthButton:Hide(); setupFrame.fireButton:Hide(); setupFrame.waterButton:Hide(); setupFrame.airButton:Hide(); setupFrame.auraButton:Hide(); setupFrame.aspectButton:Hide(); setupFrame.petButton:Hide(); setupFrame.growlButton:Hide(); setupFrame.magicButton:Hide(); setupFrame.drinkButton:Hide()
+    setupFrame.earthCaption:Hide(); setupFrame.fireCaption:Hide(); setupFrame.waterCaption:Hide(); setupFrame.airCaption:Hide(); setupFrame.auraCaption:Hide(); setupFrame.aspectCaption:Hide(); setupFrame.petCaption:Hide(); setupFrame.growlCaption:Hide(); setupFrame.magicCaption:Hide(); setupFrame.drinkCaption:Hide()
     if class == "paladin" then
         setupFrame.auraButton:Show(); setupFrame.auraCaption:Show()
     elseif class == "hunter" then
         setupFrame.aspectButton:Show(); setupFrame.aspectCaption:Show()
         setupFrame.petButton.options = HUNTER_PETS
         setupFrame.petButton.label:SetText("(none)")
+        setupFrame.growlButton.label:SetText("(none)")
         setupFrame.petCaption:ClearAllPoints(); setupFrame.petCaption:SetPoint("TOPLEFT", setupFrame, "TOPLEFT", 278, -96)
         setupFrame.petButton:ClearAllPoints(); setupFrame.petButton:SetPoint("TOPLEFT", setupFrame, "TOPLEFT", 278, -112)
         setupFrame.petButton:SetWidth(210)
         setupFrame.petButton:Show(); setupFrame.petCaption:Show()
+        setupFrame.growlButton:Show(); setupFrame.growlCaption:Show()
     elseif class == "warlock" then
         setupFrame.petButton.options = WARLOCK_PETS
         setupFrame.petButton.label:SetText("(none)")
@@ -1663,7 +1661,9 @@ local function ShowSetupClassFields()
         setupFrame.petButton:SetWidth(210)
         setupFrame.petButton:Show(); setupFrame.petCaption:Show()
     elseif class == "mage" then
+        setupFrame.drinkButton.label:SetText("(none)")
         setupFrame.magicButton:Show(); setupFrame.magicCaption:Show()
+        setupFrame.drinkButton:Show(); setupFrame.drinkCaption:Show()
     else
         setupFrame.earthButton:Show(); setupFrame.fireButton:Show(); setupFrame.waterButton:Show(); setupFrame.airButton:Show()
         setupFrame.earthCaption:Show(); setupFrame.fireCaption:Show(); setupFrame.waterCaption:Show(); setupFrame.airCaption:Show()
@@ -1678,10 +1678,8 @@ local function OpenSetup()
         local note=setupFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); note:SetPoint("TOPLEFT",setupFrame,"TOPLEFT",18,-34); note:SetWidth(480); note:SetJustifyH("LEFT"); note:SetText("After hiring, whisper companions first, then overwrite matching legacy hires."); note:SetTextColor(0.75,0.80,0.90)
         MakeCaption(setupFrame, "Class", 18, -52)
         MakeCaption(setupFrame, "Apply to", 176, -52)
-        MakeCaption(setupFrame, "Spec", 334, -52)
         setupFrame.classButton=SelectButton(setupFrame, {"Shaman","Paladin","Hunter","Warlock","Mage"}, "Shaman", 148,18,-68,function() ShowSetupClassFields() end)
         setupFrame.applyButton=SelectButton(setupFrame, SetupApplyOptions("shaman"), "All", 148,176,-68,function() end)
-        setupFrame.specButton=SelectButton(setupFrame, SetupSpecOptions("shaman"), "All", 148,334,-68,function() end)
         setupFrame.earthCaption=MakeCaption(setupFrame, "Earth", 18, -96)
         setupFrame.fireCaption=MakeCaption(setupFrame, "Fire", 268, -96)
         setupFrame.waterCaption=MakeCaption(setupFrame, "Water", 18, -140)
@@ -1689,7 +1687,9 @@ local function OpenSetup()
         setupFrame.auraCaption=MakeCaption(setupFrame, "Aura", 18, -96)
         setupFrame.aspectCaption=MakeCaption(setupFrame, "Aspect", 18, -96)
         setupFrame.petCaption=MakeCaption(setupFrame, "Pet", 18, -96)
+        setupFrame.growlCaption=MakeCaption(setupFrame, "Growl policy", 18, -140)
         setupFrame.magicCaption=MakeCaption(setupFrame, "Magic", 18, -96)
+        setupFrame.drinkCaption=MakeCaption(setupFrame, "Drink below", 268, -96)
         setupFrame.earthButton=SelectButton(setupFrame, EARTH_TOTEMS, "(none)", 240,18,-112,function() end)
         setupFrame.fireButton=SelectButton(setupFrame, FIRE_TOTEMS, "(none)", 240,268,-112,function() end)
         setupFrame.waterButton=SelectButton(setupFrame, WATER_TOTEMS, "(none)", 240,18,-156,function() end)
@@ -1697,24 +1697,27 @@ local function OpenSetup()
         setupFrame.auraButton=SelectButton(setupFrame, PALADIN_AURAS, "(none)", 240,18,-112,function() end)
         setupFrame.aspectButton=SelectButton(setupFrame, HUNTER_ASPECTS, "(none)", 240,18,-112,function() end)
         setupFrame.petButton=SelectButton(setupFrame, HUNTER_PETS, "(none)", 240,18,-112,function() end)
+        setupFrame.growlButton=SelectButton(setupFrame, C.HUNTER_GROWL, "(none)", 240,18,-156,function() end)
         setupFrame.magicButton=SelectButton(setupFrame, MAGE_MAGIC, "(none)", 240,18,-112,function() end)
+        setupFrame.drinkButton=SelectButton(setupFrame, C.MAGE_DRINK, "(none)", 210,268,-112,function() end)
         MakeButton(setupFrame,"Add Rule",86,18,-196,function()
             local class=ClassValue(setupFrame.classButton.label:GetText())
-            local rule={class=class, role=ApplyValue(setupFrame.applyButton.label:GetText()), spec=SpecValue(setupFrame.specButton.label:GetText())}
-            if rule.spec == "" then rule.spec = "all" end
+            local rule={class=class, role=ApplyValue(setupFrame.applyButton.label:GetText()), spec="all"}
             if class == "paladin" then
                 rule.aura=ChosenOrEmpty(setupFrame.auraButton.label:GetText())
                 if rule.aura == "" then SetStatus("Choose a Paladin aura first."); return end
             elseif class == "hunter" then
                 rule.aspect=ChosenOrEmpty(setupFrame.aspectButton.label:GetText())
                 rule.pet=ChosenOrEmpty(setupFrame.petButton.label:GetText())
-                if rule.aspect == "" and rule.pet == "" then SetStatus("Choose an aspect or a pet first."); return end
+                rule.growl=ChosenOrEmpty(setupFrame.growlButton.label:GetText())
+                if rule.aspect == "" and rule.pet == "" and rule.growl == "" then SetStatus("Choose an aspect, pet, or Growl policy first."); return end
             elseif class == "warlock" then
                 rule.pet=ChosenOrEmpty(setupFrame.petButton.label:GetText())
                 if rule.pet == "" then SetStatus("Choose a Warlock pet first."); return end
             elseif class == "mage" then
                 rule.magic=ChosenOrEmpty(setupFrame.magicButton.label:GetText())
-                if rule.magic == "" then SetStatus("Choose None, Amplify, or Dampen first."); return end
+                rule.drink=string.gsub(ChosenOrEmpty(setupFrame.drinkButton.label:GetText()), "%%$", "")
+                if rule.magic == "" and rule.drink == "" then SetStatus("Choose magic or a drink threshold first."); return end
             else
                 rule.earth=ChosenOrEmpty(setupFrame.earthButton.label:GetText())
                 rule.fire=ChosenOrEmpty(setupFrame.fireButton.label:GetText())

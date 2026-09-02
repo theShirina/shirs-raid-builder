@@ -47,7 +47,7 @@ Normal hires wait between 7.5 and 8.5 seconds so the old client and server comma
 
 - Add class-and-role deny rules with class-filtered ability suggestions
 - Keep custom deny lists on legacy characters
-- Configure shaman totems, paladin auras, hunter aspects and pets, warlock pets, and mage magic behavior
+- Configure shaman totems, paladin auras, hunter aspects, pets, and Growl policy; warlock pets; and mage magic and drink thresholds
 - Send normal companion setup after hiring finishes
 - Send legacy-specific setup last so it can override broader class rules
 - Wait for companion replies before moving through whisper-heavy queues
