@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.72
+## 0.73
 
 This release adds companion setup controls and fixes several saved-plan and roster handling issues.
 
