@@ -6,7 +6,7 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-0.72.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.72/ShirsRaidBuilder-0.72.zip).
+Download [ShirsRaidBuilder-0.73.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.73/ShirsRaidBuilder-0.73.zip).
 
 ## Before installing
 
@@ -69,7 +69,7 @@ Sort mode has its own profiles and never sends hiring commands.
 
 ## Current test limits
 
-This is the first public test release. The core planner and Lua 5.0.3 checks pass, but these larger live cases still need more community testing:
+The core planner and Lua 5.0.3 checks pass, but these larger live cases still need more community testing:
 
 - Full 40-member raid sorting
 - Exact member order when no empty temporary subgroup exists
