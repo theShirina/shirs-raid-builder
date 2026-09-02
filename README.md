@@ -1,6 +1,6 @@
 # Shir's Raid Builder
 
-Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 1.12. It also saves live raid layouts, sends companion setup commands, and arranges raid subgroups at a safe pace.
+Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 1.12.1. It also saves live raid layouts, sends companion setup commands, and arranges raid subgroups at a safe pace.
 
 > **Safety:** this addon can send commands that spend gold. Back up `WTF`, use **Preview** before **Execute**, and start with a small plan.
 
@@ -10,7 +10,7 @@ Download [ShirsRaidBuilder-0.73.zip](https://github.com/theShirina/shirs-raid-bu
 
 ## Before installing
 
-- Built for Microbot WoW 1.12 and Interface `11200`
+- Built for Microbot WoW 1.12.1 and Interface `11200`
 - Uses Microbot companion, legacy hire, deny, setup, and raid roster commands
 - Does not include Microbot, CCP, client files, account data, or saved profiles
 - Hiring can cost gold; the addon cannot refund a command that the server accepts
