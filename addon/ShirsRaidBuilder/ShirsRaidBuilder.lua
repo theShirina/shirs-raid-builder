@@ -1065,7 +1065,7 @@ end
 
 local function HandleInviteListMessage()
     EnsureDB()
-    if C.StoreLegacyCharacterList(DB, arg1) then
+    if C.StoreLegacyCharacterList(DB, arg1) or (event == "CHAT_MSG_ADDON" and C.StoreLegacyCharacterList(DB, arg2)) then
         if addLegacyFrame and addLegacyFrame:IsShown() then C.RefreshLegacyCharacter(addLegacyFrame) end
         return
     end
@@ -2181,6 +2181,7 @@ function C.RefreshImportPage(delta)
     local options = {}
     for index = (frame.page - 1) * 8 + 1, math.min(frame.page * 8, table.getn(frame.names)) do table.insert(options, frame.names[index]) end
     frame.sourceButton.options = options
+    frame.sourceButton.label:SetText(options[1] or "(no saved profiles)")
     if frame.page > 1 then frame.previousButton:Enable() else frame.previousButton:Disable() end
     if frame.page * 8 < table.getn(frame.names) then frame.nextButton:Enable() else frame.nextButton:Disable() end
     frame.pageLabel:SetText("Page " .. frame.page .. " / " .. math.max(1, math.ceil(table.getn(frame.names) / 8)))
@@ -2247,7 +2248,7 @@ function C.OpenPresetImport()
     frame.mode = DB.uiMode; frame.destination = current; frame.destinationPreset = bank[current]
     frame.confirmed = nil
     frame.names = names; frame.page = 1; C.RefreshImportPage(0)
-    frame.sourceButton.label:SetText(names[1] or "(no saved profiles)")
+
     frame.sourceButton:Enable(); frame.warningCheck:Enable()
     frame.characterKey = C.CaptureWarningKey(type(UnitName) == "function" and UnitName("player") or "", type(GetRealmName) == "function" and GetRealmName() or "")
     frame.warningCheck:SetChecked(not (frame.characterKey ~= "" and type(DB.importWarningHidden) == "table" and DB.importWarningHidden[frame.characterKey] == true))

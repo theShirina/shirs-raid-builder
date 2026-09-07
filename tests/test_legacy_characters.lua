@@ -278,6 +278,49 @@ test('invalid and full-board Add preserve the entered name and choices',function
     assert(h.env.ShirsRaidBuilderDB.legacyCharacterRoles==nil,'rejected Add saved a role')
 end)
 
+test('addon legacy response reads arg2 through the registered receive handler',function()
+    local h=boot({presets={}}); local f=open(h); f.nameInput:SetText('Wiremage')
+    h.env.event='CHAT_MSG_ADDON'; h.env.arg2='[nexus] ACINFO:LEGACY:LIST Wiremage:Mage:0 Wirepriest:Priest:1'
+    h.env.arg3='WHISPER'; h.env.arg4='nexus'
+    local listeners=0
+    for _,w in ipairs(h.frames) do
+        if w.events.CHAT_MSG_ADDON and w.events.CHAT_MSG_MONSTER_WHISPER then
+            listeners=listeners+1; h:fire(w,'OnEvent','nexus')
+        end
+    end
+    assert(listeners==1,'real receive listener missing')
+    assert(h.C.LegacyCharacterClass(h.env.ShirsRaidBuilderDB,'Wiremage')=='mage','arg2 legacy payload was not stored')
+    assert(h.C.LegacyCharacterClass(h.env.ShirsRaidBuilderDB,'Wirepriest')=='priest')
+    assert(f.classButton.label:GetText()=='Mage','arg2 reply did not refresh the editor')
+    h:click(f.addButton); assert(h:entry('Wiremage').class=='mage')
+end)
+
+test('incomplete and unknown licences omit tier text without inventing data',function()
+    local C=boot().C
+    assert(C.CurrentLicenseTier(nil)==nil)
+    local invalid={{},{raidLicense='t2r'},{dungeonLicense='t2d'},
+        {raidLicense='',dungeonLicense='t2d'},{raidLicense='t2r',dungeonLicense=''},
+        {raidLicense='future',dungeonLicense='t2d'},{raidLicense='t2r',dungeonLicense='future'},
+        {raidLicense='t9r',dungeonLicense='t2d'},{raidLicense='t2r',dungeonLicense='t9d'},
+        {raidLicense='t2d',dungeonLicense='t2r'},
+        {raidLicense=false,dungeonLicense='t2d'},{raidLicense='t2r',dungeonLicense={}}}
+    for _,record in ipairs(invalid) do
+        assert(C.CurrentLicenseTier(record)==nil,'incomplete or unknown licence fabricated a tier')
+        record.name='Wiremage'; record.class='mage'; record.level=60
+        local h=boot({inviteCharacters={Wiremage=record},presets={}})
+        local found=false
+        for _,row in ipairs(h.env.ShirsRaidBuilderMainFrame.accountRows) do
+            if row.fonts[1]:GetText()=='Wiremage  [0]' then
+                found=true; assert(table.getn(row.fonts)==1 and row:GetHeight()==22,'unknown licence rendered an extra tier line')
+            end
+        end
+        assert(found,'licence fixture never reached account renderer')
+    end
+    assert(C.CurrentLicenseTier({raidLicense='t4r',dungeonLicense='t2d'})=='T4R - T2D')
+    assert(C.CurrentLicenseTier({raidLicense='t2r',dungeonLicense='NONE'})=='T2R - T0D','explicit no dungeon licence retains known base tier')
+    assert(C.CurrentLicenseTier({raidLicense='t1',dungeonLicense='t1'})=='T1 - T1')
+end)
+
 print('Legacy character tests: '..passes..' PASS, '..failures..' FAIL')
 assert(failures==0,'legacy character regression failures')
 print("Shir's Raid Builder legacy character tests: PASS")

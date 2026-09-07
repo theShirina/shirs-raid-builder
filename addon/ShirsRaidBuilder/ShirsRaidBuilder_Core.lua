@@ -1170,11 +1170,13 @@ end
 
 function C.CurrentLicenseTier(record)
     if type(record) ~= "table" then return nil end
+    if type(record.raidLicense) ~= "string" or type(record.dungeonLicense) ~= "string" then return nil end
     local raid = string.upper(C.Trim(record.raidLicense))
     local dungeon = string.upper(C.Trim(record.dungeonLicense))
-    if dungeon == "" or dungeon == "NONE" then
+    if dungeon == "NONE" then
         dungeon = "T0D"
     end
+    if not string.find(raid, "^T[0-5]R?$") or not string.find(dungeon, "^T[0-5]D?$") then return nil end
     return raid .. " - " .. dungeon
 end
 
