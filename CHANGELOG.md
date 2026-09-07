@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.75
+
+This correction release fixes three problems in the public 0.74 release.
+
+### Fixed
+
+- Legacy character data could fail to refresh from Microbot addon messages; the list now reads the message payload correctly
+- Changing import pages could leave the previous page's profile selected; the picker now selects a profile from the page shown
+- Incomplete or unknown licence data could show a made-up tier; those rows now show no tier while complete known values remain visible
+
 ## 0.74
 
 This release adds profile import and per-legacy commands, improves legacy character selection, and fixes duplicate and name handling.

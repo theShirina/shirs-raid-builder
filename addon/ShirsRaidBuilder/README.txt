@@ -1,4 +1,4 @@
-Shir's Raid Builder 0.74
+Shir's Raid Builder 0.75
 
 Built for Microbot WoW 1.12.1.
 
@@ -19,6 +19,10 @@ Add Legacy remembers known class and role choices. Its picker can scroll through
 long lists, shows known classes in colour, and hides names already in the current
 profile. Individual commands can set deny and setup commands for one legacy
 hire.
+
+This version refreshes legacy data from addon messages, resets the import
+selection when you change pages, and leaves the licence tier blank when the
+source data is incomplete or unknown.
 
 The addon does not include Microbot, CCP, client files, account data, or saved
 profiles.

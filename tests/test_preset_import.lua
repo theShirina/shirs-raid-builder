@@ -139,6 +139,34 @@ test('import header button stays outside title drag strip and other controls',fu
     local close=h:button(main,'X'); assert(b.point[4]+b:GetWidth()<close.point[4])
 end)
 
+test('page transitions reset visible source and import the selected page in both modes',function()
+    for _,mode in ipairs({'hire','sort'}) do
+        for targetPage=1,3 do
+            local h=boot(); local db=h.env.ShirsRaidBuilderDB
+            if mode=='sort' then h.C.ToggleRaidMode() end
+            local bank=h.C.PresetBank(db,mode)
+            for i=1,17 do
+                bank[string.format('Saved%02d',i)]={entries={{kind='legacy',charName='Page'..i,class='mage',role='rdps'}},denyRules={},setupRules={}}
+            end
+            local f=open(h)
+            h:choose(f.sourceButton,'Saved02')
+            h:click(f.nextButton)
+            assert(f.sourceButton.label:GetText()=='Saved09','next page retained stale source label')
+            assert(not f.confirmed and f.importButton.label:GetText()=='Import')
+            h:choose(f.sourceButton,'Saved10'); h:click(f.previousButton)
+            assert(f.sourceButton.label:GetText()=='Saved01','previous page retained stale source label')
+            for page=2,targetPage do h:click(f.nextButton) end
+            local selected=f.sourceButton.options[table.getn(f.sourceButton.options)]
+            h:choose(f.sourceButton,selected)
+            local source=bank[selected]
+            h:click(f.importButton)
+            assert(f.confirmed==source and string.find(f.message:GetText(),selected,1,true),'warning names wrong source')
+            h:click(f.importButton)
+            assert(bank.Default~=source and bank.Default.entries[1].charName==source.entries[1].charName,'import used another page source')
+        end
+    end
+end)
+
 print('Preset import tests: '..passes..' PASS, '..failures..' FAIL')
 assert(failures==0,'preset import regression failures')
 print("Shir's Raid Builder preset import tests: PASS")
