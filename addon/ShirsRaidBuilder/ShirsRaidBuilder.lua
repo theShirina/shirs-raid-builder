@@ -34,6 +34,19 @@ local function BindAccountDB()
         if type(pending.characterRoles) == "table" then
             for name, role in pairs(pending.characterRoles) do DB.characterRoles[name] = role end
         end
+        if type(pending.legacyCharacters) == "table" then
+            for name, class in pairs(pending.legacyCharacters) do
+                if not C.LegacyCharacterClass(DB, name) then C.RememberLegacyCharacter(DB, name, class) end
+            end
+        end
+        if type(pending.legacyCharacterRoles) == "table" then
+            if type(DB.legacyCharacterRoles) ~= "table" then DB.legacyCharacterRoles = {} end
+            for name, role in pairs(pending.legacyCharacterRoles) do
+                if type(name) == "string" and DB.legacyCharacterRoles[name] == nil and C.LegacyCharacterRole(pending, name, C.LegacyCharacterClass(DB, name)) == role then
+                    DB.legacyCharacterRoles[name] = role
+                end
+            end
+        end
     end
     return true
 end
@@ -104,7 +117,6 @@ local settingsRoleButton = nil
 local settingsClassButton = nil
 local setupFrame = nil
 local legacyNameMenu = nil
-local legacyNameRows = {}
 local executing = false
 local executeFrame = nil
 local nodFrame = nil
@@ -328,7 +340,7 @@ function C.EnsureDenyListScroll(host, spec)
         local items = state.items or {}
         local count = table.getn(items)
         state.offset = C.ClampDenyListOffset(state.offset, count)
-        if C.DenyListNeedsScrollbar(count) then
+        if C.DenyListNeedsScrollbar(count) and (not spec.minScrollCount or count >= spec.minScrollCount) then
             local height, y = C.DenyListThumb(state.offset, count, track:GetHeight())
             thumb:SetHeight(height)
             thumb:ClearAllPoints()
@@ -934,6 +946,9 @@ function RefreshComposition()
         mainFrame.roleText:SetText("Tank "..roles.tank.."   Healer "..roles.healer.."   Melee "..roles.mdps.."   Range "..roles.rdps)
     end
     RefreshAccountPanel()
+    if addLegacyFrame and addLegacyFrame:IsShown() and C.RefreshLegacyNameSuggestions then
+        C.RefreshLegacyNameSuggestions(addLegacyFrame.nameInput)
+    end
     if C.rescueNote then
         local moved = C.rescueNote
         C.rescueNote = nil
@@ -1035,6 +1050,7 @@ local function StoreInviteCharacters(records)
     for i = 1, table.getn(records) do
         local record = records[i]
         DB.inviteCharacters[record.name] = record
+        C.RememberLegacyCharacter(DB, record.name, record.class)
         if record.level then DB.characterLevels[record.name] = record.level end
         RememberFaction(record.name, record.faction)
         if not C.IsLegacyHireStub(record.name, realNames) then DB.knownCharacters[record.name] = true end
@@ -1048,12 +1064,18 @@ local function StoreInviteCharacters(records)
 end
 
 local function HandleInviteListMessage()
+    EnsureDB()
+    if C.StoreLegacyCharacterList(DB, arg1) then
+        if addLegacyFrame and addLegacyFrame:IsShown() then C.RefreshLegacyCharacter(addLegacyFrame) end
+        return
+    end
     local raw = tostring(arg1 or "")
     if arg2 and arg2 ~= "" then raw = raw .. " " .. tostring(arg2) end
     local payload = C.ExtractInviteListPayload(raw)
     if not payload then return end
     local records = C.ParseInviteList(payload)
     StoreInviteCharacters(records)
+    if addLegacyFrame and addLegacyFrame:IsShown() then C.RefreshLegacyCharacter(addLegacyFrame) end
     if mainFrame and mainFrame:IsShown() then RefreshAccountPanel() end
     SetStatus("CCP licenses: " .. table.getn(records) .. " character(s). Only those who can hire are listed.")
 end
@@ -1107,22 +1129,41 @@ function RefreshAccountPanel()
             if not exists then table.insert(names, name) end
         end
     end
-    table.sort(names)
+    C.SortInviteNamesByRaidLicense(names, DB.inviteCharacters)
+    local realm = type(GetRealmName) == "function" and GetRealmName()
+    local now = type(time) == "function" and time()
     local y = -8
     for i = 1, table.getn(names) do
         local name = names[i]
+        local record = type(DB.inviteCharacters) == "table" and DB.inviteCharacters[name]
+        local currentTier = C.CurrentLicenseTier(record)
+        local savedRaids = C.GetConfirmedSavedRaidLabels(ShirsLazyTrixDB, realm, name, now)
+        local rowHeight = (currentTier and 34 or 22) + (savedRaids ~= "" and 14 or 0)
         local row = CreateFrame("Button", nil, mainFrame.accountContent)
-        row:SetWidth(165); row:SetHeight(22); row:SetPoint("TOPLEFT", mainFrame.accountContent, "TOPLEFT", 2, y)
+        row:SetWidth(165); row:SetHeight(rowHeight); row:SetPoint("TOPLEFT", mainFrame.accountContent, "TOPLEFT", 2, y)
         local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        text:SetPoint("LEFT", row, "LEFT", 4, 0)
+        if currentTier or savedRaids ~= "" then text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -3) else text:SetPoint("LEFT", row, "LEFT", 4, 0) end
         text:SetText(name .. "  [" .. (counts[name] or 0) .. "]")
         text:SetTextColor(0.75, 0.88, 1.0)
+        if currentTier then
+            local tierText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            tierText:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -17)
+            tierText:SetText(currentTier)
+            tierText:SetTextColor(0.62, 0.72, 0.82)
+        end
+        if savedRaids ~= "" then
+            local raidText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            raidText:SetPoint("TOPLEFT", row, "TOPLEFT", 4, currentTier and -31 or -17)
+            raidText:SetWidth(157); raidText:SetJustifyH("LEFT")
+            raidText:SetText(savedRaids)
+            raidText:SetTextColor(0.85, 0.72, 0.42)
+        end
         local captured = name
         row:SetScript("OnClick", function()
             SetStatus(captured .. " has " .. (counts[captured] or 0) .. " hire(s) in this preset.")
         end)
         table.insert(mainFrame.accountRows, row)
-        y = y - 24
+        y = y - rowHeight - 2
     end
     mainFrame.accountContent:SetHeight(math.max(100, -y + 10))
 end
@@ -1138,13 +1179,14 @@ local function HideFloatingPanels()
     CloseChoiceMenu()
     if abilityMenu then abilityMenu:Hide() end
     if legacyNameMenu then legacyNameMenu:Hide() end
+    if setupFrame then setupFrame:Hide() end
     if denyFrame then denyFrame:Hide() end
     if settingsFrame then settingsFrame:Hide() end
-    if setupFrame then setupFrame:Hide() end
     if addNormalFrame then addNormalFrame:Hide() end
     if addLegacyFrame then addLegacyFrame:Hide() end
     if namePrompt then namePrompt:Hide() end
     if C.capturePrompt then C.capturePrompt:Hide() end
+    if C.importFrame then C.importFrame:Hide() end
     if dragGhost then dragGhost:Hide() end
     if dragUpdate then dragUpdate:SetScript("OnUpdate", nil) end
     if contextShield then contextShield:Hide() end
@@ -1207,7 +1249,7 @@ OpenContextMenu = function(index, anchor, page)
             AddContext("Close", CloseContext)
         else
         if entry.kind == "legacy" then
-            AddContext("Edit extra denies", function() CloseContext(); OpenDenyEditor(index) end)
+            AddContext("Individual commands", function() CloseContext(); OpenDenyEditor(index) end)
         end
         if entry.kind == "normal" then
             AddContext("Tier: " .. (entry.tier or "t2r"), function() OpenContextMenu(index, anchor, "tier") end)
@@ -1395,12 +1437,22 @@ end
 
 local function AddWorkingDeny()
     HideAbilitySuggestions()
-    local value = C.Trim(denyFrame.input:GetText())
-    if value ~= "" then table.insert(denyWorking, value); denyWorking = C.NormalizeDenyList(denyWorking); denyFrame.input:SetText(""); RefreshDenyRows() end
+    if not C.EditorEntryIsCurrent(denyFrame) then SetStatus("The selected individual changed. Reopen its commands."); return end
+    local query = string.lower(C.Trim(denyFrame.input:GetText()))
+    local catalog = C.AbilitiesForClassRole(ShirsRaidBuilderAbilities, denyFrame.entry.class, "all")
+    for i=1,table.getn(catalog) do
+        if string.lower(catalog[i]) == query then
+            table.insert(denyWorking, catalog[i]); denyWorking = C.NormalizeDenyList(denyWorking)
+            denyFrame.input:SetText(""); HideAbilitySuggestions(); RefreshDenyRows(); return
+        end
+    end
+    SetStatus("Choose an ability from this individual's class deny list.")
 end
 
 OpenDenyEditor = function(index)
     local entry = EnsureDB().entries[index]; if not entry or entry.kind ~= "legacy" then SetStatus("Only legacy hires can have custom deny lists."); return end
+    CloseChoiceMenu()
+    if setupFrame then setupFrame:Hide() end
     denyIndex = index; denyWorking = C.CopyDenyList(entry.denyList)
     if not denyFrame then
         denyFrame = CreateFrame("Frame", "ShirsRaidBuilderDenyFrame", UIParent); denyFrame:SetWidth(370); denyFrame:SetHeight(280); StylePanelFrame(denyFrame)
@@ -1408,18 +1460,28 @@ OpenDenyEditor = function(index)
         RegisterEscapeFrame(denyFrame)
         denyFrame:SetScript("OnHide", HideAbilitySuggestions)
         denyFrame.title = denyFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); denyFrame.title:SetPoint("TOP",denyFrame,"TOP",0,-14)
-        denyFrame.note = denyFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); denyFrame.note:SetPoint("TOPLEFT",denyFrame,"TOPLEFT",18,-34); denyFrame.note:SetText("Character-specific additions; group rules are in Settings."); denyFrame.note:SetTextColor(0.75,0.80,0.90)
+        denyFrame.note = denyFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); denyFrame.note:SetPoint("TOPLEFT",denyFrame,"TOPLEFT",18,-34); denyFrame.note:SetText("Search this class's abilities, or open Other Commands."); denyFrame.note:SetTextColor(0.75,0.80,0.90)
         denyFrame.input = MakeInput(denyFrame, 240, 18, -54, "")
         denyFrame.input:SetScript("OnEnterPressed", AddWorkingDeny)
         denyFrame.input:SetScript("OnTextChanged", function()
-            local current = EnsureDB().entries[denyIndex]
-            RefreshAbilitySuggestions(denyFrame.input, current and current.class or "shaman", current and current.role or "mdps")
+            local current = denyFrame.entry
+            RefreshAbilitySuggestions(denyFrame.input, current and current.class or "shaman", "all")
         end)
+        denyFrame.input:SetScript("OnEditFocusGained", function() RefreshAbilitySuggestions(denyFrame.input, denyFrame.entry.class, "all") end)
         MakeButton(denyFrame,"Add",64,264,-54,AddWorkingDeny)
-        MakeButton(denyFrame,"Save",64,18,14,function() HideAbilitySuggestions(); EnsureDB().entries[denyIndex].denyList=C.NormalizeDenyList(denyWorking); denyFrame:Hide(); RefreshComposition() end, true)
+        MakeButton(denyFrame,"Other Commands",142,18,-210,function()
+            if not C.EditorEntryIsCurrent(denyFrame) then SetStatus("The selected individual changed. Reopen its commands."); return end
+            HideAbilitySuggestions(); C.OpenIndividualSetup(denyFrame.entry)
+        end)
+        MakeButton(denyFrame,"Save",64,18,14,function()
+            HideAbilitySuggestions()
+            if not C.EditorEntryIsCurrent(denyFrame) then SetStatus("The selected individual changed. Reopen its commands."); return end
+            denyFrame.entry.denyList=C.NormalizeDenyList(denyWorking); denyFrame:Hide(); RefreshComposition()
+        end, true)
         MakeButton(denyFrame,"Cancel",64,86,14,function() HideAbilitySuggestions(); denyFrame:Hide() end, true)
     end
-    denyFrame.title:SetText("Extra denies: " .. (C.GetLegacyWhisperName(entry) ~= "" and C.GetLegacyWhisperName(entry) or (entry.charName or "entry"))); denyFrame.input:SetText(""); HideAbilitySuggestions(); RefreshDenyRows(); denyFrame:Show()
+    denyFrame.entry=entry; denyFrame.preset=EnsureDB(); denyFrame.entryClass=entry.class
+    denyFrame.title:SetText("Individual commands: " .. C.GetWhisperTarget(entry)); denyFrame.input:SetText(""); HideAbilitySuggestions(); RefreshDenyRows(); denyFrame:Show()
 end
 ShirsRaidBuilder_OpenDenyEditor = OpenDenyEditor
 
@@ -1570,8 +1632,9 @@ local function SetupApplyOptions(class)
     return result
 end
 
-local function SetupSummary(rule)
+local function SetupSummary(rule, entry)
     local who = ApplyLabel(rule.role) .. " " .. (CLASS_LABELS[rule.class] or rule.class)
+    if entry then who = C.GetWhisperTarget(entry) end
     if rule.class == "paladin" then return who .. ": " .. (rule.aura or "(none)") end
     if rule.class == "hunter" then
         local parts = {}
@@ -1620,25 +1683,32 @@ local function RefreshSetupList()
             row.text:SetTextColor(0.85,0.90,1.0)
             MakeButton(row,"Remove",64,414,2,function()
                 if not row.setupIndex then return end
-                table.remove(EnsureDB().setupRules, row.setupIndex)
+                local rules = C.SetupRulesForEditor()
+                if not rules then return end
+                table.remove(rules, row.setupIndex)
                 RefreshSetupList(); SetStatus("Removed totem/aura rule.")
             end)
             return row
         end,
         bindRow = function(row, item, index)
             row.setupIndex = index
-            row.text:SetText(SetupSummary(item))
+            row.text:SetText(SetupSummary(item, setupFrame.entry))
         end,
     })
-    scroll.items = EnsureDB().setupRules
+    scroll.items = C.SetupRulesForEditor() or {}
     scroll.Paint()
 end
 
 local function ShowSetupClassFields()
     if not setupFrame then return end
     local class = ClassValue(setupFrame.classButton.label:GetText())
-    setupFrame.applyButton.options = SetupApplyOptions(class)
-    setupFrame.applyButton.label:SetText(PickListed(setupFrame.applyButton.options, setupFrame.applyButton.label:GetText()))
+    if setupFrame.entry then
+        setupFrame.applyButton.options = {C.GetWhisperTarget(setupFrame.entry)}
+        setupFrame.applyButton.label:SetText(setupFrame.applyButton.options[1])
+    else
+        setupFrame.applyButton.options = SetupApplyOptions(class)
+        setupFrame.applyButton.label:SetText(PickListed(setupFrame.applyButton.options, setupFrame.applyButton.label:GetText()))
+    end
     setupFrame.earthButton:Hide(); setupFrame.fireButton:Hide(); setupFrame.waterButton:Hide(); setupFrame.airButton:Hide(); setupFrame.auraButton:Hide(); setupFrame.aspectButton:Hide(); setupFrame.petButton:Hide(); setupFrame.growlButton:Hide(); setupFrame.magicButton:Hide(); setupFrame.drinkButton:Hide()
     setupFrame.earthCaption:Hide(); setupFrame.fireCaption:Hide(); setupFrame.waterCaption:Hide(); setupFrame.airCaption:Hide(); setupFrame.auraCaption:Hide(); setupFrame.aspectCaption:Hide(); setupFrame.petCaption:Hide(); setupFrame.growlCaption:Hide(); setupFrame.magicCaption:Hide(); setupFrame.drinkCaption:Hide()
     if class == "paladin" then
@@ -1664,18 +1734,40 @@ local function ShowSetupClassFields()
         setupFrame.drinkButton.label:SetText("(none)")
         setupFrame.magicButton:Show(); setupFrame.magicCaption:Show()
         setupFrame.drinkButton:Show(); setupFrame.drinkCaption:Show()
-    else
+    elseif class == "shaman" then
         setupFrame.earthButton:Show(); setupFrame.fireButton:Show(); setupFrame.waterButton:Show(); setupFrame.airButton:Show()
         setupFrame.earthCaption:Show(); setupFrame.fireCaption:Show(); setupFrame.waterCaption:Show(); setupFrame.airCaption:Show()
     end
 end
 
-local function OpenSetup()
+function C.EditorEntryIsCurrent(host)
+    local preset = EnsureDB()
+    if host.preset ~= preset or not host.entry or host.entry.class ~= host.entryClass then return false end
+    for i = 1, table.getn(preset.entries) do
+        if preset.entries[i] == host.entry then return host.entry.kind == "legacy" end
+    end
+    return false
+end
+
+function C.SetupRulesForEditor()
+    if not setupFrame.entry then return EnsureDB().setupRules end
+    if not C.EditorEntryIsCurrent(setupFrame) then
+        SetStatus("The selected individual changed. Reopen its commands.")
+        return nil
+    end
+    if type(setupFrame.entry.setupRules) ~= "table" then setupFrame.entry.setupRules = {} end
+    return setupFrame.entry.setupRules
+end
+
+local function OpenSetup(entry)
+    CloseChoiceMenu()
+    HideAbilitySuggestions()
+    if denyFrame then denyFrame:Hide() end
     if not setupFrame then
         setupFrame=CreateFrame("Frame","ShirsRaidBuilderSetupFrame",UIParent); setupFrame:SetWidth(520); setupFrame:SetHeight(430); StylePanelFrame(setupFrame); setupFrame:SetPoint("CENTER",UIParent,"CENTER",0,0)
         setupFrame.title=setupFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); setupFrame.title:SetPoint("TOP",setupFrame,"TOP",0,-14)
         MakeButton(setupFrame,"X",22,480,-8,function() CloseChoiceMenu(); setupFrame:Hide() end)
-        local note=setupFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); note:SetPoint("TOPLEFT",setupFrame,"TOPLEFT",18,-34); note:SetWidth(480); note:SetJustifyH("LEFT"); note:SetText("After hiring, whisper companions first, then overwrite matching legacy hires."); note:SetTextColor(0.75,0.80,0.90)
+        local note=setupFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); note:SetPoint("TOPLEFT",setupFrame,"TOPLEFT",18,-34); note:SetWidth(480); note:SetJustifyH("LEFT"); note:SetTextColor(0.75,0.80,0.90); setupFrame.note=note
         MakeCaption(setupFrame, "Class", 18, -52)
         MakeCaption(setupFrame, "Apply to", 176, -52)
         setupFrame.classButton=SelectButton(setupFrame, {"Shaman","Paladin","Hunter","Warlock","Mage"}, "Shaman", 148,18,-68,function() ShowSetupClassFields() end)
@@ -1701,8 +1793,10 @@ local function OpenSetup()
         setupFrame.magicButton=SelectButton(setupFrame, MAGE_MAGIC, "(none)", 240,18,-112,function() end)
         setupFrame.drinkButton=SelectButton(setupFrame, C.MAGE_DRINK, "(none)", 210,268,-112,function() end)
         MakeButton(setupFrame,"Add Rule",86,18,-196,function()
+            local rules=C.SetupRulesForEditor()
+            if not rules then return end
             local class=ClassValue(setupFrame.classButton.label:GetText())
-            local rule={class=class, role=ApplyValue(setupFrame.applyButton.label:GetText()), spec="all"}
+            local rule={class=class, role=setupFrame.entry and "all" or ApplyValue(setupFrame.applyButton.label:GetText()), spec="all"}
             if class == "paladin" then
                 rule.aura=ChosenOrEmpty(setupFrame.auraButton.label:GetText())
                 if rule.aura == "" then SetStatus("Choose a Paladin aura first."); return end
@@ -1718,32 +1812,50 @@ local function OpenSetup()
                 rule.magic=ChosenOrEmpty(setupFrame.magicButton.label:GetText())
                 rule.drink=string.gsub(ChosenOrEmpty(setupFrame.drinkButton.label:GetText()), "%%$", "")
                 if rule.magic == "" and rule.drink == "" then SetStatus("Choose magic or a drink threshold first."); return end
-            else
+            elseif class == "shaman" then
                 rule.earth=ChosenOrEmpty(setupFrame.earthButton.label:GetText())
                 rule.fire=ChosenOrEmpty(setupFrame.fireButton.label:GetText())
                 rule.water=ChosenOrEmpty(setupFrame.waterButton.label:GetText())
                 rule.air=ChosenOrEmpty(setupFrame.airButton.label:GetText())
                 if rule.earth=="" and rule.fire=="" and rule.water=="" and rule.air=="" then SetStatus("Choose at least one totem slot."); return end
+            else
+                SetStatus("This class has no Other Commands. Use its deny list."); return
             end
-            table.insert(EnsureDB().setupRules, rule)
-            RefreshSetupList(); SetStatus("Saved " .. SetupSummary(rule) .. ".")
+            table.insert(rules, rule)
+            RefreshSetupList(); SetStatus("Saved " .. SetupSummary(rule, setupFrame.entry) .. ".")
         end)
         MakeButton(setupFrame,"Close",64,18,14,function() CloseChoiceMenu(); setupFrame:Hide() end,true)
-        setupFrame:SetScript("OnHide", CloseChoiceMenu)
+        setupFrame:SetScript("OnHide", function()
+            CloseChoiceMenu()
+            if setupFrame.entry and denyFrame and denyFrame.entry == setupFrame.entry
+                and C.EditorEntryIsCurrent(denyFrame) then denyFrame:Show() end
+        end)
         RegisterEscapeFrame(setupFrame)
         ShowSetupClassFields()
     end
-    setupFrame.title:SetText("Other commands: " .. (DB.currentPreset or "Default")); RefreshSetupList(); setupFrame:Show()
+    setupFrame.entry=entry
+    setupFrame.preset=EnsureDB()
+    setupFrame.entryClass=entry and entry.class
+    if entry then
+        setupFrame.classButton.label:SetText(CLASS_LABELS[entry.class] or entry.class)
+        setupFrame.classButton:Disable(); setupFrame.applyButton:Disable()
+        setupFrame.title:SetText("Other commands: " .. C.GetWhisperTarget(entry))
+        setupFrame.note:SetText("Only this individual receives these commands, after general assignments.")
+    else
+        setupFrame.classButton:Enable(); setupFrame.applyButton:Enable()
+        setupFrame.classButton.label:SetText("Shaman")
+        setupFrame.title:SetText("Other commands: " .. (DB.currentPreset or "Default"))
+        setupFrame.note:SetText("After hiring, whisper companions first, then overwrite matching legacy hires.")
+    end
+    local fields={"earth","fire","water","air","aura","aspect","pet","growl","magic","drink"}
+    for i=1,table.getn(fields) do setupFrame[fields[i] .. "Button"].label:SetText("(none)") end
+    ShowSetupClassFields(); RefreshSetupList(); setupFrame:Show()
 end
+C.OpenIndividualSetup = OpenSetup
 
 local function HideLegacyNameSuggestions()
     C.HideLegacyNameSuggestions = HideLegacyNameSuggestions
     if legacyNameMenu then legacyNameMenu:Hide() end
-    for i = 1, table.getn(legacyNameRows) do
-        legacyNameRows[i]:Hide()
-        legacyNameRows[i]:SetParent(nil)
-    end
-    legacyNameRows = {}
 end
 
 local function RefreshLegacyNameSuggestions(input)
@@ -1752,13 +1864,17 @@ local function RefreshLegacyNameSuggestions(input)
     local query = string.lower(C.Trim(input:GetText()))
     local names = DiscoverCharacterNames()
     local matches = {}
+    local added = {}
+    local preset = DB.presets and DB.presets[DB.currentPreset]
+    for _, entry in pairs(preset and preset.entries or {}) do
+        if entry.kind == "legacy" then added[string.lower(C.GetLegacyHireName(entry))] = true end
+    end
     for i = 1, table.getn(names) do
         local name = names[i]
         local lower = string.lower(name)
         if query == "" or string.find(lower, query, 1, true) then
-            if lower ~= query then
+            if lower ~= query and not added[lower] then
                 table.insert(matches, name)
-                if table.getn(matches) >= 5 then break end
             end
         end
     end
@@ -1766,6 +1882,9 @@ local function RefreshLegacyNameSuggestions(input)
     local host = input:GetParent() or UIParent
     if not legacyNameMenu then
         legacyNameMenu = CreateFrame("Frame", "ShirsRaidBuilderLegacyNameMenu", host)
+        legacyNameMenu:SetScript("OnHide", function()
+            if legacyNameMenu.listScroll then legacyNameMenu.listScroll.dragging = false end
+        end)
     else
         legacyNameMenu:SetParent(host)
     end
@@ -1776,29 +1895,51 @@ local function RefreshLegacyNameSuggestions(input)
     legacyNameMenu:SetFrameLevel((host.GetFrameLevel and host:GetFrameLevel() or 80) + 4)
     legacyNameMenu:ClearAllPoints()
     legacyNameMenu:SetPoint("TOPLEFT", input, "BOTTOMLEFT", -4, -2)
-    legacyNameMenu:SetWidth(158)
-    legacyNameMenu:SetHeight(table.getn(matches) * 20 + 8)
+    local count = table.getn(matches)
+    legacyNameMenu:SetWidth(count > 5 and 174 or 158)
+    legacyNameMenu:SetHeight(math.min(count, 5) * 20 + 8)
     if host.addButton then host.addButton:SetFrameLevel((host.GetFrameLevel and host:GetFrameLevel() or 80) + 20) end
     if host.cancelButton then host.cancelButton:SetFrameLevel((host.GetFrameLevel and host:GetFrameLevel() or 80) + 20) end
-    for i = 1, table.getn(matches) do
-        local option = CreateFrame("Button", nil, legacyNameMenu)
-        option:SetWidth(150); option:SetHeight(18)
-        option:SetPoint("TOPLEFT", legacyNameMenu, "TOPLEFT", 4, -4 - ((i - 1) * 20))
-        local text = option:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        text:SetPoint("LEFT", option, "LEFT", 4, 0)
-        text:SetText(matches[i])
-        text:SetTextColor(0.92, 0.95, 1.0)
-        option:SetScript("OnEnter", function() text:SetTextColor(1.0, 0.86, 0.35) end)
-        option:SetScript("OnLeave", function() text:SetTextColor(0.92, 0.95, 1.0) end)
-        local selected = matches[i]
-        option:SetScript("OnClick", function()
-            input:SetText(selected)
-            HideLegacyNameSuggestions()
-        end)
-        table.insert(legacyNameRows, option)
-    end
+    legacyNameMenu.input = input
+    local scroll = C.EnsureDenyListScroll(legacyNameMenu, {
+        width = 150, rowHeight = 20, x = 4, y = -4, minScrollCount = 6,
+        createRow = function(parent)
+            local row = CreateFrame("Button", nil, parent)
+            row:SetWidth(150); row:SetHeight(18)
+            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            row.text:SetPoint("LEFT", row, "LEFT", 4, 0)
+            row.text:SetWidth(142); row.text:SetJustifyH("LEFT")
+            row.highlight = row:CreateTexture(nil, "BACKGROUND")
+            row.highlight:SetAllPoints(row)
+            row.highlight:SetTexture(1, 1, 1, 0.12)
+            row.highlight:Hide()
+            row:SetScript("OnEnter", function() row.highlight:Show() end)
+            row:SetScript("OnLeave", function() row.highlight:Hide() end)
+            row:SetScript("OnClick", function()
+                legacyNameMenu.input:SetText(row.nameValue)
+                HideLegacyNameSuggestions()
+            end)
+            return row
+        end,
+        bindRow = function(row, name)
+            row.nameValue = name
+            row.text:SetText(name)
+            local color = CLASS_COLORS[C.LegacyCharacterClass(DB, name)]
+            if color then row.text:SetTextColor(color[1], color[2], color[3])
+            else row.text:SetTextColor(0.92, 0.95, 1.0) end
+            row.highlight:Hide()
+        end,
+    })
+    scroll.viewport:SetHeight(math.min(count, 5) * 20)
+    scroll.thumb:EnableMouseWheel(true)
+    scroll.thumb:SetScript("OnMouseWheel", scroll.track:GetScript("OnMouseWheel"))
+    scroll.items = matches
+    scroll.offset = 0
+    scroll.dragging = false
+    scroll.Paint()
     legacyNameMenu:Show()
 end
+C.RefreshLegacyNameSuggestions = RefreshLegacyNameSuggestions
 
 local function RefreshNormalHireOptions(frame)
     if not frame or not frame.roleButton or not frame.classButton then return end
@@ -1822,6 +1963,43 @@ local function RefreshNormalHireOptions(frame)
         frame.raceButton.options = races
         frame.raceButton.label:SetText(PickListed(races, frame.raceButton.label:GetText()))
     end
+end
+
+function C.RefreshLegacyCharacter(frame)
+    if not frame or not frame.classButton or not frame.roleButton then return end
+    if frame.legacyEditedName == string.lower(C.Trim(frame.nameInput:GetText())) then return end
+    local class = C.LegacyCharacterClass(DB, frame.nameInput:GetText())
+    if not class then return end
+    local role
+    if frame.legacyRoleEditedName ~= string.lower(C.Trim(frame.nameInput:GetText())) then
+        role = C.LegacyCharacterRole(DB, frame.nameInput:GetText(), class)
+    end
+    role = role or C.NormalizeRoleForClass(class, RoleValue(frame.roleButton.label:GetText()))
+    frame.roleButton.label:SetText(ROLE_LABELS[role])
+    frame.classButton.options = ClassesForRole(role)
+    frame.classButton.label:SetText(CLASS_LABELS[class])
+end
+
+function C.RefreshLegacyRole(frame)
+    frame.legacyRoleEditedName = string.lower(C.Trim(frame.nameInput:GetText()))
+    local classes = ClassesForRole(RoleValue(frame.roleButton.label:GetText()))
+    frame.classButton.options = classes
+    frame.classButton.label:SetText(PickListed(classes, frame.classButton.label:GetText()))
+    C.RefreshLegacyCharacter(frame)
+end
+
+function C.RequestLegacyCharacters(frame)
+    EnsureInviteListener()
+    if type(GetTime) ~= "function" or type(SendChatMessage) ~= "function" then return end
+    local now = GetTime()
+    if C.legacyRequestedAt and now - C.legacyRequestedAt < 2 then return end
+    if not C.legacyQueryFrame then C.legacyQueryFrame = CreateFrame("Frame") end
+    C.legacyRequestedAt = now
+    C.legacyQueryFrame:SetScript("OnUpdate", function()
+        if GetTime() - now < 0.5 then return end
+        C.legacyQueryFrame:SetScript("OnUpdate", nil)
+        if frame:IsShown() then SendChatMessage(".z addlegacy list", "SAY") end
+    end)
 end
 
 local function AddEntryEditor(kind)
@@ -1850,7 +2028,7 @@ local function AddEntryEditor(kind)
             MakeCaption(frame, "Character name", 18, -30)
             frame.nameInput=MakeInput(frame,150,18,-46,"")
             frame.nameInput:SetMaxLetters(12)
-            frame.nameInput:SetScript("OnTextChanged", function() RefreshLegacyNameSuggestions(frame.nameInput) end)
+            frame.nameInput:SetScript("OnTextChanged", function() frame.legacyEditedName=nil; frame.legacyRoleEditedName=nil; C.RefreshLegacyCharacter(frame); RefreshLegacyNameSuggestions(frame.nameInput) end)
             frame.nameInput:SetScript("OnEditFocusGained", function() RefreshLegacyNameSuggestions(frame.nameInput) end)
             frame.nameInput:SetScript("OnEditFocusLost", function() end)
             frame.nameInput:SetScript("OnEnterPressed", function() HideLegacyNameSuggestions() end)
@@ -1858,14 +2036,13 @@ local function AddEntryEditor(kind)
         MakeCaption(frame, "Role", 156, -30)
         frame.roleButton=SelectButton(frame, {"Tank","Healer","Ranged DPS","Melee DPS"}, "Melee DPS",128,156,-46,function()
             if kind == "normal" then RefreshNormalHireOptions(frame) else
-                local classes=ClassesForRole(RoleValue(frame.roleButton.label:GetText()))
-                frame.classButton.options=classes
-                frame.classButton.label:SetText(classes[1] or "(none)")
+                C.RefreshLegacyRole(frame)
             end
         end)
         MakeCaption(frame, "Class", 294, -30)
         frame.classButton=SelectButton(frame,ClassesForRole("mdps"),"Warrior",128,294,-46,function()
-            if kind == "normal" then RefreshNormalHireOptions(frame) end
+            if kind == "normal" then RefreshNormalHireOptions(frame)
+            else frame.legacyEditedName=string.lower(C.Trim(frame.nameInput:GetText())) end
         end)
         if kind=="normal" then
             MakeCaption(frame, "Tier", 432, -30)
@@ -1899,13 +2076,21 @@ local function AddEntryEditor(kind)
                 if not C.IsSafeCharacterName(typed) then SetStatus("Character names must use 2-12 letters only."); return end
                 if string.sub(string.lower(typed), -5) == "-lite" then SetStatus("Type the real name (Longname). The card still shows Longnam-lite."); return end
                 local hireName=typed
+                for _, entry in pairs(p.entries) do
+                    if entry.kind == "legacy" and string.lower(C.GetLegacyHireName(entry)) == string.lower(hireName) then
+                        SetStatus(hireName .. " is already in this hiring plan.")
+                        return
+                    end
+                end
                 local whisperName=C.NormalizeLegacyName(hireName)
-                f.nameInput:SetText(hireName)
                 HideLegacyNameSuggestions()
                 local slot=C.FirstEmptySlot(p.entries, 40)
                 if not slot then SetStatus("All 40 raid slots are full."); return end
                 p.entries[slot]={kind="legacy",sourceName=hireName,charName=hireName,role=RoleValue(f.roleButton.label:GetText()),class=ClassValue(f.classButton.label:GetText()),spec="",denyList={},whisperName=whisperName}
-                RefreshComposition(); SetStatus("Added " .. whisperName .. " (hires " .. hireName .. ") in spawn " .. slot .. ".")
+                C.RememberLegacyCharacter(DB, hireName, p.entries[slot].class, p.entries[slot].role)
+                RefreshComposition()
+                f.nameInput:SetText(""); HideLegacyNameSuggestions()
+                SetStatus("Added " .. whisperName .. " (hires " .. hireName .. ") in spawn " .. slot .. ".")
             end,true)
             frame.cancelButton=MakeButton(frame,"Cancel",64,18,14,function() HideLegacyNameSuggestions(); frame:Hide() end,true); addLegacyFrame=frame
         end
@@ -1922,6 +2107,11 @@ local function AddEntryEditor(kind)
     frame:SetFrameStrata("FULLSCREEN_DIALOG")
     if frame.SetToplevel then frame:SetToplevel(true) end
     frame:Show()
+    if kind == "legacy" then
+        C.RefreshLegacyCharacter(frame)
+        RefreshLegacyNameSuggestions(frame.nameInput)
+        C.RequestLegacyCharacters(frame)
+    end
     if frame.characterButton and frame.characterButton.SetFrameLevel then frame.characterButton:SetFrameLevel((frame:GetFrameLevel() or 10) + 5) end
 end
 
@@ -1982,6 +2172,89 @@ local function DeletePreset()
     if DB.uiMode == "sort" then DB.currentSortPreset=names[1] else DB.currentPreset=names[1] end
     if names[1]==current then DB.currentSortPreset=names[2] or names[1]; if DB.uiMode ~= "sort" then DB.currentPreset=names[2] or names[1] end end
     EnsureDB(); RefreshPresetButton(); RefreshComposition()
+end
+
+function C.RefreshImportPage(delta)
+    local frame = C.importFrame
+    CloseChoiceMenu()
+    frame.page = math.max(1, math.min(math.max(1, math.ceil(table.getn(frame.names) / 8)), (frame.page or 1) + (delta or 0)))
+    local options = {}
+    for index = (frame.page - 1) * 8 + 1, math.min(frame.page * 8, table.getn(frame.names)) do table.insert(options, frame.names[index]) end
+    frame.sourceButton.options = options
+    if frame.page > 1 then frame.previousButton:Enable() else frame.previousButton:Disable() end
+    if frame.page * 8 < table.getn(frame.names) then frame.nextButton:Enable() else frame.nextButton:Disable() end
+    frame.pageLabel:SetText("Page " .. frame.page .. " / " .. math.max(1, math.ceil(table.getn(frame.names) / 8)))
+end
+
+function C.OpenPresetImport()
+    EnsureDB()
+    if executing or (C.sortFrame and C.sortFrame.busy) then SetStatus("Stop the current run before importing a profile."); return end
+    HideFloatingPanels()
+    if not C.importFrame then
+        local frame = CreateFrame("Frame", "ShirsRaidBuilderImport", UIParent)
+        C.importFrame = frame
+        frame:SetWidth(430); frame:SetHeight(280); StylePanelFrame(frame)
+        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+        MakeCaption(frame, "Import saved profile", 28, -16)
+        MakeCaption(frame, "Copy from", 28, -42)
+        frame.sourceButton = SelectButton(frame, {}, "", 374, 28, -60)
+        frame.previousButton = MakeButton(frame, "Previous", 72, 28, -90, function() C.RefreshImportPage(-1) end)
+        frame.nextButton = MakeButton(frame, "Next", 72, 106, -90, function() C.RefreshImportPage(1) end)
+        frame.pageLabel = MakeCaption(frame, "", 194, -94)
+        frame.warningCheck = CreateFrame("CheckButton", "ShirsRaidBuilderImportWarningCheck", frame, "UICheckButtonTemplate")
+        frame.warningCheck:SetWidth(20); frame.warningCheck:SetHeight(20)
+        frame.warningCheck:SetPoint("TOPLEFT", frame, "TOPLEFT", 24, -122)
+        frame.warningCheck:SetScript("OnClick", function()
+            if frame.characterKey == "" then frame.warningCheck:SetChecked(1); return end
+            if type(DB.importWarningHidden) ~= "table" then DB.importWarningHidden = {} end
+            DB.importWarningHidden[frame.characterKey] = not frame.warningCheck:GetChecked() and true or nil
+        end)
+        MakeCaption(frame, "Show overwrite warning for this character", 50, -126)
+        frame.message = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        frame.message:SetPoint("TOPLEFT", frame, "TOPLEFT", 28, -154)
+        frame.message:SetWidth(374); frame.message:SetJustifyH("LEFT")
+        frame.importButton = MakeButton(frame, "Import", 100, 90, 16, function()
+            local bank, current = C.PresetBank(DB, DB.uiMode)
+            local source = frame.sourceButton.label:GetText()
+            if DB.uiMode ~= frame.mode or current ~= frame.destination or bank[current] ~= frame.destinationPreset or
+                type(bank[source]) ~= "table" or source == current or executing or (C.sortFrame and C.sortFrame.busy) then
+                frame:Hide(); SetStatus("The profile changed or a run started. Open Import again."); return
+            end
+            if not frame.confirmed and frame.warningCheck:GetChecked() then
+                frame.confirmed = bank[source]
+                frame.sourceButton:Disable(); frame.warningCheck:Disable()
+                frame.previousButton:Disable(); frame.nextButton:Disable()
+                frame.importButton.label:SetText("Overwrite")
+                frame.message:SetText("Overwrite \"" .. current .. "\" with \"" .. source .. "\"?\n\nThis replaces its entries, deny rules and setup rules. The source profile stays unchanged.")
+                return
+            end
+            if frame.confirmed and frame.confirmed ~= bank[source] then frame:Hide(); SetStatus("The source profile changed. Open Import again."); return end
+            if C.ImportPreset(DB, frame.mode, source, current) then
+                frame:Hide(); EnsureDB(); RefreshPresetButton(); RefreshComposition()
+                SetStatus("Imported " .. source .. " into " .. current .. ".")
+            end
+        end, true)
+        MakeButton(frame, "Cancel", 100, 240, 16, function() frame:Hide() end, true)
+        frame:SetScript("OnHide", function() CloseChoiceMenu(); frame.confirmed = nil end)
+    end
+    local frame = C.importFrame
+    local bank, current = C.PresetBank(DB, DB.uiMode)
+    local names = {}
+    for name, preset in pairs(bank) do
+        if type(name) == "string" and name ~= current and type(preset) == "table" then table.insert(names, name) end
+    end
+    table.sort(names)
+    frame.mode = DB.uiMode; frame.destination = current; frame.destinationPreset = bank[current]
+    frame.confirmed = nil
+    frame.names = names; frame.page = 1; C.RefreshImportPage(0)
+    frame.sourceButton.label:SetText(names[1] or "(no saved profiles)")
+    frame.sourceButton:Enable(); frame.warningCheck:Enable()
+    frame.characterKey = C.CaptureWarningKey(type(UnitName) == "function" and UnitName("player") or "", type(GetRealmName) == "function" and GetRealmName() or "")
+    frame.warningCheck:SetChecked(not (frame.characterKey ~= "" and type(DB.importWarningHidden) == "table" and DB.importWarningHidden[frame.characterKey] == true))
+    frame.importButton.label:SetText("Import")
+    if table.getn(names) == 0 then frame.importButton:Disable(); frame.sourceButton:Disable() else frame.importButton:Enable() end
+    frame.message:SetText("Copy a saved " .. frame.mode .. " profile into \"" .. current .. "\". Its current contents will be replaced.")
+    frame:Show()
 end
 
 local function IsRealCharacterName(name)
@@ -2685,6 +2958,7 @@ local function HideTopOverlay()
     if contextFrame and contextFrame:IsShown() then CloseContext(); return true end
     if namePrompt and namePrompt:IsShown() then namePrompt:Hide(); return true end
     if C.capturePrompt and C.capturePrompt:IsShown() then C.capturePrompt:Hide(); return true end
+    if C.importFrame and C.importFrame:IsShown() then C.importFrame:Hide(); return true end
     if denyFrame and denyFrame:IsShown() then denyFrame:Hide(); return true end
     if addNormalFrame and addNormalFrame:IsShown() then addNormalFrame:Hide(); return true end
     if addLegacyFrame and addLegacyFrame:IsShown() then HideLegacyNameSuggestions(); addLegacyFrame:Hide(); return true end
@@ -2857,6 +3131,7 @@ local function CreateMain()
     MakeCaption(mainFrame, "Profile", 22, -32)
     presetButton=SelectButton(mainFrame,GetPresetNames(),DB.currentPreset,140,22,-48,function(v) SwitchPreset(v) end)
     C.SetTip(presetButton,"Profile","Hire mode and sort mode each have their own saved profiles.")
+    C.SetTip(MakeButton(mainFrame,"Import",76,648,-8,C.OpenPresetImport),"Import","Copy a saved profile into the current profile. Hire and sort profiles stay separate.")
     C.SetTip(MakeButton(mainFrame,"New",88,168,-48,NewPreset),"New","Create an empty profile in the current mode.")
     C.SetTip(MakeButton(mainFrame,"Rename",88,260,-48,RenamePreset),"Rename","Rename the open profile. Does not copy it.")
     C.SetTip(MakeButton(mainFrame,"Delete",88,352,-48,DeletePreset),"Delete","Delete the open profile. Needs at least one left.")

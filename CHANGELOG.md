@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.74
+
+This release adds profile import and per-legacy commands, improves legacy character selection, and fixes duplicate and name handling.
+
+### Added
+
+- Import a saved Hire or Sort profile into the current profile with a paged picker and overwrite warning; the copied profile stays independent
+- Set deny and setup commands for one legacy hire from its **Individual commands** editor
+- Reuse saved class and role choices for known legacy characters, with class data refreshed from Microbot's legacy-character list
+- Browse more than five matching legacy names with a scrollbar and class colours
+
+### Changed
+
+- Hiring-character rows now sort by raid licence and can show licence tiers and confirmed saved raid lockouts when that information is available
+
+### Fixed
+
+- Names already added to the current hiring plan no longer stay in the Add Legacy suggestions; the list refreshes after profile changes
+- Adding the same legacy hire twice no longer creates a duplicate entry; the existing entry stays unchanged
+- After a successful legacy hire is added, its name field now clears while the panel and class and role choices remain ready for the next hire
+
 ## 0.73
 
 This release adds companion setup controls.

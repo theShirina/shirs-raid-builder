@@ -826,4 +826,72 @@ assert(not C.SetCaptureWarningHidden(warningDB, "", "Microbot", true))
 warningDB.captureWarningHidden["microbot:mageowner"] = "yes"
 assert(C.ShouldShowCaptureWarning(warningDB, "Mageowner", "Microbot"))
 
+-- Confirmed lockouts come only from the optional provider's saved snapshots.
+do
+    assert(type(C.GetConfirmedSavedRaidLabels) == "function", "confirmed saved raid helper is missing")
+    local sep = string.char(31)
+    local now = 1800000000
+    local function snapshot(instances, known)
+        return {cooldownsByCharacter = {["Realm" .. sep .. "Alpha"] = {
+            raidInfo = {known=known, observedAt=now-100, instances=instances}}}}
+    end
+    local function labels(db, clock)
+        return C.GetConfirmedSavedRaidLabels(db, "Realm", "Alpha", clock or now)
+    end
+    local function saved(name)
+        return {name=name, id="123", readyAt=now+100}
+    end
+    local all = {saved("Naxxramas"), saved("Ahn'Qiraj Temple"), saved("Blackwing Lair"), saved("Molten Core")}
+    assert(labels(snapshot(all, true)) == "MC BWL AQ40 NAX", "exact four labels in stable order")
+    for _, alias in ipairs({"Temple of Ahn'Qiraj", "Ahn'Qiraj", "AQ40", "  aHN'qIRAJ tEMPLE  "}) do
+        assert(labels(snapshot({saved(alias), saved("Ahn'Qiraj Temple")}, true)) == "AQ40", "AQ40 aliases deduplicate")
+    end
+    assert(labels(snapshot({saved(" molten core "), saved("MOLTEN CORE")}, true)) == "MC")
+    for _, name in ipairs({"Onyxia's Lair", "Zul'Gurub", "Ruins of Ahn'Qiraj", "AQ20", "Scholomance", "Unknown"}) do
+        assert(labels(snapshot({saved(name)}, true)) == "", "exclude non-allowlisted raids: " .. name)
+    end
+    for _, known in ipairs({false, "true", 1}) do
+        assert(labels(snapshot(all, known)) == "", "known must be strictly true")
+    end
+    assert(labels(snapshot(all)) == "")
+    assert(labels(snapshot({}, true)) == "")
+    for _, db in ipairs({false, "bad", {}, {cooldownsByCharacter=false}, {cooldownsByCharacter={["Realm"..sep.."Alpha"]=1}},
+        {cooldownsByCharacter={["Realm"..sep.."Alpha"]={raidInfo="bad"}}}}) do
+        assert(labels(db) == "", "malformed provider must fail closed")
+    end
+    assert(labels(nil) == "")
+    assert(labels(snapshot(false, true)) == "")
+    local nan = 0/0
+    for _, clock in ipairs({false, "1800000000", -1, 0, nan, 1/0, 4102444801}) do
+        assert(C.GetConfirmedSavedRaidLabels(snapshot(all,true), "Realm", "Alpha", clock) == "", "invalid clock")
+    end
+    assert(C.GetConfirmedSavedRaidLabels(snapshot(all,true), "Realm", "Alpha", nil) == "")
+    for _, readyAt in ipairs({false, "1800000100", -1, 0, now-1, now, nan, 1/0, 4134067201}) do
+        assert(labels(snapshot({{name="Molten Core", readyAt=readyAt}}, true)) == "", "invalid or expired lockout")
+    end
+    assert(labels(snapshot({{name="Molten Core"}}, true)) == "")
+    assert(labels(snapshot({{name="Molten Core", readyAt=4134067200}}, true)) == "MC")
+    for _, flag in ipairs({"ready", "scheduled"}) do
+        local row = saved("Molten Core"); row[flag] = true
+        assert(labels(snapshot({row}, true)) == "", "synthetic rows never confirm a lockout")
+    end
+    assert(labels(snapshot({false, 1, {}, {name={},readyAt=now+1}, saved("Molten Core")}, true)) == "MC", "bad rows must not hide valid siblings")
+    local db = snapshot(all, true)
+    db.cooldownsByCharacter["Realm"..sep.."Beta"] = {raidInfo={known=true,instances={saved("Blackwing Lair")}}}
+    db.cooldownsByCharacter["Other"..sep.."Alpha"] = {raidInfo={known=true,instances={saved("Naxxramas")}}}
+    assert(C.GetConfirmedSavedRaidLabels(db,"Realm","Beta",now) == "BWL")
+    assert(C.GetConfirmedSavedRaidLabels(db,"Other","Alpha",now) == "NAX")
+    assert(C.GetConfirmedSavedRaidLabels(db,"Absent","Alpha",now) == "")
+    assert(C.GetConfirmedSavedRaidLabels(db,"Realm","Absent",now) == "")
+    for _, invalid in ipairs({false, 1, "", "   "}) do
+        assert(C.GetConfirmedSavedRaidLabels(db,invalid,"Alpha",now) == "")
+        assert(C.GetConfirmedSavedRaidLabels(db,"Realm",invalid,now) == "")
+    end
+    assert(C.GetConfirmedSavedRaidLabels(db,nil,"Alpha",now) == "")
+    assert(C.GetConfirmedSavedRaidLabels(db,"Realm",nil,now) == "")
+    assert(db.cooldownsByCharacter["Realm"..sep.."Alpha"].raidInfo.instances == all)
+    assert(all[1].name == "Naxxramas" and all[1].id == "123" and table.getn(all) == 4, "do not sort or change provider rows")
+    assert(labels(db, now+100) == "", "expired snapshots clear on refresh")
+end
+
 print("Shir's Raid Builder core tests: PASS")
