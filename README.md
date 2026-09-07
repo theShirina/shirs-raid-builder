@@ -2,11 +2,11 @@
 
 Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 1.12.1. It also saves live raid layouts, sends companion setup commands, and arranges raid subgroups at a safe pace.
 
-> **Safety:** this addon can send commands that spend gold. Back up `WTF`, use **Preview** before **Execute**, and start with a small plan.
+> **Safety:** this addon can send commands that spend gold. Back up `WTF`, use **Preview** before **Execute**, and start with a small plan. Import replaces the current profile after its overwrite warning.
 
 ## Download
 
-Download [ShirsRaidBuilder-0.73.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.73/ShirsRaidBuilder-0.73.zip).
+Download [ShirsRaidBuilder-0.74.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.74/ShirsRaidBuilder-0.74.zip).
 
 ## Before installing
 
@@ -34,10 +34,14 @@ Profiles are stored in the account-wide `ShirsRaidBuilderDB` SavedVariable.
 - Add normal companions by hiring character, tier, class, role, spec, race, and gender
 - Limit each hiring character to four normal companions per plan
 - Add named legacy characters with their real hire name and derived `-lite` name
+- Reuse saved class and role choices for known legacy characters
+- Browse all matching legacy names with a five-row scrollbar and class colours
+- Keep names already in the current hiring profile out of the Add Legacy suggestions
 - Include the current player as a gold board card without treating that card as a hire
 - Drag cards to swap raid slots and collapse groups while editing
 - Move the main window and each subpanel independently
-- Keep separate named profiles, with New, Rename, Delete, and Preview controls
+- Keep separate named profiles, with New, Rename, Delete, Import, and Preview controls
+- Import a saved Hire or Sort profile with a paged picker and overwrite confirmation
 - Preview the complete command queue without sending anything
 - Stop a running hire or whisper queue
 
@@ -46,11 +50,14 @@ Normal hires wait between 7.5 and 8.5 seconds so the old client and server comma
 ## Companion setup
 
 - Add class-and-role deny rules with class-filtered ability suggestions
+- Open **Individual commands** on a legacy hire to search its class abilities and set commands for that hire alone
 - Keep custom deny lists on legacy characters
 - Configure shaman totems, paladin auras, hunter aspects, pets, and Growl policy; warlock pets; and mage magic and drink thresholds
 - Send normal companion setup after hiring finishes
 - Send legacy-specific setup last so it can override broader class rules
 - Wait for companion replies before moving through whisper-heavy queues
+
+The account panel sorts hiring characters by raid licence and can show licence tiers and confirmed saved raid lockouts when that information is available.
 
 ## Sort mode
 

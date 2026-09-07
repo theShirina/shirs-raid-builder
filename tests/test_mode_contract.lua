@@ -88,10 +88,101 @@ local idleReturnPosition = assert(string.find(source, "if (not executing) and (n
 assert(cachePosition < idleReturnPosition, "GRINFO replies must be cached before idle execution returns")
 assert(string.find(source, "executeGrinfoReady = false", 1, true), "a hire must invalidate the previous companion list before group expansion")
 assert(string.find(source, "function C.EnsureDenyListScroll(host, spec)", 1, true), "deny lists share one five-row scroll factory")
-assert(string.find(source, "if C.DenyListNeedsScrollbar(count) then", 1, true), "the deny scrollbar must stay hidden until five items")
+assert(string.find(source, "if C.DenyListNeedsScrollbar(count) and (not spec.minScrollCount or count >= spec.minScrollCount) then", 1, true), "deny lists retain the five-item default; legacy names may request six")
 assert(string.find(source, "C.EnsureDenyListScroll(denyFrame", 1, true), "extra denies must use the five-row viewport")
 assert(string.find(source, "C.EnsureDenyListScroll(settingsFrame", 1, true), "deny rules must use the five-row viewport")
 assert(string.find(source, "C.DENY_LIST_VISIBLE_ROWS", 1, true), "deny list height must stay pinned to five visible rows")
 assert(string.find(source, 'if type(ShirsRaidBuilderDB) ~= "table" then ShirsRaidBuilderDB = {} end', 1, true), "BindAccountDB must create the SavedVariable global, never return without binding; a missing global means logout saves nil and profiles vanish")
+
+-- Execute the actual account renderer with only its surrounding UI dependencies stubbed.
+do
+    dofile("../addon/ShirsRaidBuilder/ShirsRaidBuilder_Core.lua")
+    local C = ShirsRaidBuilderCore
+    local first = assert(string.find(source, "function RefreshAccountPanel()", 1, true))
+    local last = assert(string.find(source, "CloseContext = function()", first, true))
+    local body = string.sub(source, first, last-1)
+    local function widget(parent)
+        local w = {parent=parent, fonts={}, scripts={}, shown=true}
+        function w:SetWidth(v) self.width=v end
+        function w:SetHeight(v) self.height=v end
+        function w:SetPoint(...) self.point=arg end
+        function w:SetText(v) self.text=v end
+        function w:SetTextColor(...) end
+        function w:SetJustifyH(v) self.justify=v end
+        function w:SetScript(k,v) self.scripts[k]=v end
+        function w:Hide() self.shown=false end
+        function w:Show() self.shown=true end
+        function w:SetParent(v) self.parent=v end
+        function w:CreateFontString()
+            local f=widget(self); table.insert(self.fonts,f); return f
+        end
+        return w
+    end
+    local content = widget()
+    local frame = {accountContent=content}
+    local db = {uiMode="hire", inviteCharacters={
+        Alpha={raidLicense="t4r",dungeonLicense="t2d"},
+        Beta={raidLicense="t2r",dungeonLicense="NONE"},
+        Gamma={raidLicense="t1r",dungeonLicense="t1d"}}}
+    local preset = {entries={{kind="normal",account="Alpha"}}}
+    local status
+    local env = {C=C, DB=db, mainFrame=frame,
+        EnsureDB=function() return preset end,
+        DiscoverCharacterNames=function() return {"Unknown", "Gamma", "Beta", "Alpha"} end,
+        CreateFrame=function(kind,name,parent) return widget(parent) end,
+        GetRealmName=function() return "Realm" end,
+        time=function() return 1800000000 end,
+        SetStatus=function(v) status=v end}
+    setmetatable(env, {__index=_G})
+    local chunk=assert(loadstring(body, "account renderer")); setfenv(chunk,env); chunk()
+    local function refresh() env.RefreshAccountPanel(); return frame.accountRows end
+    local rows=refresh()
+    assert(table.getn(rows)==4 and rows[1].fonts[1].text=="Alpha  [1]")
+    assert(rows[1].fonts[2].text=="T4R - T2D" and rows[2].fonts[2].text=="T2R - T0D")
+    assert(rows[1].height==34 and rows[4].height==22, "no provider preserves baseline geometry")
+    local sep=string.char(31)
+    local function state(names)
+        local instances={}
+        for _,name in ipairs(names) do table.insert(instances,{name=name,id="42",readyAt=1800000100}) end
+        return {raidInfo={known=true,instances=instances}}
+    end
+    local provider={cooldownsByCharacter={
+        ["Realm"..sep.."Alpha"]=state({"Naxxramas","Ahn'Qiraj Temple","Blackwing Lair","Molten Core"}),
+        ["Realm"..sep.."Beta"]=state({"Molten Core"}),
+        ["Realm"..sep.."Gamma"]=state({"Zul'Gurub"}),
+        ["Realm"..sep.."Unknown"]=state({"Blackwing Lair"}),
+        ["Foreign"..sep.."Gamma"]=state({"Naxxramas"})}}
+    env.ShirsLazyTrixDB=provider
+    rows=refresh()
+    assert(rows[1].fonts[3] and rows[1].fonts[3].text=="MC BWL AQ40 NAX", "confirmed saves render below the license pair")
+    assert(rows[2].fonts[3].text=="MC", "each character renders its own saves")
+    assert(table.getn(rows[3].fonts)==2 and rows[3].height==34, "no confirmed saves keeps baseline row")
+    assert(rows[4].fonts[2].text=="BWL", "missing license still shows confirmed saves below the name")
+    assert(rows[1].fonts[1].text=="Alpha  [1]" and rows[1].fonts[2].text=="T4R - T2D")
+    for _,i in ipairs({1,2,4}) do
+        local row=rows[i]; local n=table.getn(row.fonts)
+        local raid=row.fonts[n]; local preceding=row.fonts[n-1]
+        assert(raid.parent==row and raid.point[2]==row and raid.point[1]=="TOPLEFT")
+        assert(preceding.point[1]=="TOPLEFT" and raid.point[5] <= preceding.point[5]-14, "raid text must sit below prior line")
+        assert(raid.width and raid.width+raid.point[4]<=row.width, "raid line must stay inside row width")
+        assert(-raid.point[5]+12<=row.height, "row must enclose last text line")
+        if rows[i+1] then assert(rows[i+1].point[5] <= row.point[5]-row.height-2, "next row must not overlap") end
+    end
+    assert(content.height>=-rows[4].point[5]+rows[4].height, "content must reach the last row")
+    rows[1].scripts.OnClick()
+    assert(status=="Alpha has 1 hire(s) in this preset.", "row click semantics stay unchanged")
+    local old=rows
+    provider.cooldownsByCharacter["Realm"..sep.."Alpha"].raidInfo.instances={}
+    rows=refresh()
+    assert(table.getn(rows[1].fonts)==2 and rows[1].height==34, "refresh removes stale raid text and extra height")
+    for _,row in ipairs(old) do assert(not row.shown and row.parent==nil, "old rows must be hidden and detached") end
+    db.uiMode="sort"; refresh(); assert(not content.shown, "Sort mode hides all account labels")
+    db.uiMode="hire"; env.ShirsLazyTrixDB=nil; rows=refresh()
+    assert(content.shown and table.getn(rows[2].fonts)==2 and rows[4].height==22)
+    env.ShirsLazyTrixDB=provider; env.time=nil; rows=refresh()
+    assert(table.getn(rows[2].fonts)==2, "missing clock must not guess saved status")
+    assert(provider.cooldownsByCharacter["Realm"..sep.."Beta"].raidInfo.instances[1].readyAt==1800000100)
+    assert(not string.find(body,"SendChatMessage",1,true) and not string.find(body,"RequestRaidInfo",1,true), "rendering must not query or send")
+end
 
 print("Shir's Raid Builder mode contract tests: PASS")

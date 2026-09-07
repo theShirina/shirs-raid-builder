@@ -749,6 +749,17 @@ function C.BuildQueue(preset)
             if magic and target ~= "" then
                 table.insert(queue, {kind="setup", phase="legacy-setup", character=C.Trim(entry.charName), sourceEntryIndex=i, chatType="WHISPER", target=target, command=magic})
             end
+            local individual = C.BuildClassSetupPlan(entry.setupRules)
+            for si = 1, table.getn(individual) do
+                local item = individual[si]
+                if item.class == C.NormalizeClassLabel(entry.class) and target ~= "" then
+                    item.phase = "legacy-setup"
+                    item.character = C.Trim(entry.charName)
+                    item.sourceEntryIndex = i
+                    item.target = target
+                    table.insert(queue, item)
+                end
+            end
         end
     end
     for i = 1, table.getn(lateWhispers) do table.insert(queue, lateWhispers[i]) end
@@ -877,6 +888,87 @@ end
 
 function C.ClassKeyFromLabel(class)
     return string.lower(C.Trim(class))
+end
+
+function C.RememberLegacyCharacter(db, name, class, role)
+    if type(db) ~= "table" or type(name) ~= "string" or type(class) ~= "string" then return end
+    local key = string.lower(C.Trim(name))
+    class = C.ClassKeyFromLabel(class)
+    if not C.IsSafeCharacterName(key) or string.find(key, "-", 1, true) then return end
+    if not C.RoleAllowedForClass(class, C.DefaultRoleForClass(class)) then return end
+    if type(db.legacyCharacters) ~= "table" then db.legacyCharacters = {} end
+    db.legacyCharacters[key] = class
+    if type(role) == "string" and role == C.NormalizeRoleLabel(role) and C.RoleAllowedForClass(class, role) then
+        if type(db.legacyCharacterRoles) ~= "table" then db.legacyCharacterRoles = {} end
+        db.legacyCharacterRoles[key] = role
+    end
+end
+
+function C.LegacyCharacterRole(db, name, class)
+    if type(db) ~= "table" or type(name) ~= "string" or type(class) ~= "string" then return nil end
+    local key = string.lower(C.Trim(name))
+    if not C.IsSafeCharacterName(key) then return nil end
+    local role
+    if type(db.legacyCharacterRoles) == "table" then role = db.legacyCharacterRoles[key] end
+    if role ~= nil then
+        if type(role) == "string" and role == C.NormalizeRoleLabel(role) and C.RoleAllowedForClass(class, role) then return role end
+        return nil
+    end
+    -- Older saves have the role only in their legacy composition entries.
+    local found
+    for _, preset in pairs(type(db.presets) == "table" and db.presets or {}) do
+        local entries = type(preset) == "table" and preset.entries or nil
+        for _, entry in pairs(type(entries) == "table" and entries or {}) do
+            if type(entry) == "table" and entry.kind == "legacy" and string.lower(C.GetLegacyHireName(entry)) == key then
+                role = entry.role
+                if type(entry.class) ~= "string" or C.ClassKeyFromLabel(entry.class) ~= class or type(role) ~= "string" or role ~= C.NormalizeRoleLabel(role) or not C.RoleAllowedForClass(class, role) then return nil end
+                if found and found ~= role then return nil end
+                found = role
+            end
+        end
+    end
+    return found
+end
+
+function C.StoreLegacyCharacterList(db, message)
+    if type(message) ~= "string" then return false end
+    local _, _, payload = string.find(message, "^%[nexus%] ACINFO:LEGACY:LIST (.*)$")
+    if not payload then return false end
+    for record in string.gfind(payload, "%S+") do
+        local _, _, name, class = string.find(record, "^(%a+):(%a+):[01]$")
+        if name then C.RememberLegacyCharacter(db, name, class) end
+    end
+    return true
+end
+
+function C.LegacyCharacterClass(db, name)
+    if type(db) ~= "table" or type(name) ~= "string" then return nil end
+    local key = string.lower(C.Trim(name))
+    if not C.IsSafeCharacterName(key) then return nil end
+    local cached = type(db.legacyCharacters) == "table" and db.legacyCharacters[key] or nil
+    if type(cached) == "string" and C.RoleAllowedForClass(cached, C.DefaultRoleForClass(cached)) then return cached end
+    local records = type(db.inviteCharacters) == "table" and db.inviteCharacters or {}
+    for savedName, record in pairs(records) do
+        if type(savedName) == "string" and string.lower(savedName) == key and type(record) == "table" then
+            local class = type(record.class) == "string" and C.ClassKeyFromLabel(record.class) or ""
+            if C.RoleAllowedForClass(class, C.DefaultRoleForClass(class)) then return class end
+        end
+    end
+    local found
+    for _, preset in pairs(type(db.presets) == "table" and db.presets or {}) do
+        local entries = type(preset) == "table" and preset.entries or nil
+        for _, entry in pairs(type(entries) == "table" and entries or {}) do
+            if type(entry) == "table" and entry.kind == "legacy" and string.lower(C.GetLegacyHireName(entry)) == key then
+                local class = type(entry.class) == "string" and C.ClassKeyFromLabel(entry.class) or ""
+                if C.RoleAllowedForClass(class, C.DefaultRoleForClass(class)) then
+                    if found and found ~= class then return nil end
+                    found = class
+                end
+            end
+        end
+    end
+    if found then return found end
+    return nil
 end
 
 function C.NormalizeBoardEntry(entry)
@@ -1045,6 +1137,57 @@ function C.BuildLicenseOptions(dungeonLicense, raidLicense)
     for i = 1, d do table.insert(result, dungeon[i]) end
     for i = 1, r do table.insert(result, raid[i]) end
     return result
+end
+
+-- Read LazyTrix's confirmed snapshot only, never its synthetic Ready/schedule rows.
+function C.GetConfirmedSavedRaidLabels(lazyDB, realm, character, now)
+    if type(realm) ~= "string" or C.Trim(realm) == "" or type(character) ~= "string" or C.Trim(character) == "" then return "" end
+    if type(now) ~= "number" or not (now > 0 and now <= 4102444800) then return "" end
+    if type(lazyDB) ~= "table" or type(lazyDB.cooldownsByCharacter) ~= "table" then return "" end
+    local state = lazyDB.cooldownsByCharacter[realm .. string.char(31) .. character]
+    if type(state) ~= "table" or type(state.raidInfo) ~= "table" then return "" end
+    local info = state.raidInfo
+    if info.known ~= true or type(info.instances) ~= "table" then return "" end
+    local aliases = {
+        ["molten core"] = "MC", ["blackwing lair"] = "BWL",
+        ["temple of ahn'qiraj"] = "AQ40", ["ahn'qiraj temple"] = "AQ40",
+        ["ahn'qiraj"] = "AQ40", ["aq40"] = "AQ40", ["naxxramas"] = "NAX",
+    }
+    local found = {}
+    for _, entry in ipairs(info.instances) do
+        if type(entry) == "table" and not entry.ready and not entry.scheduled and type(entry.name) == "string"
+            and type(entry.readyAt) == "number" and entry.readyAt > now and entry.readyAt <= 4102444800 + 31622400 then
+            local label = aliases[string.lower(C.Trim(entry.name))]
+            if label then found[label] = true end
+        end
+    end
+    local labels = {}
+    for _, label in ipairs({"MC", "BWL", "AQ40", "NAX"}) do
+        if found[label] then table.insert(labels, label) end
+    end
+    return table.concat(labels, " ")
+end
+
+function C.CurrentLicenseTier(record)
+    if type(record) ~= "table" then return nil end
+    local raid = string.upper(C.Trim(record.raidLicense))
+    local dungeon = string.upper(C.Trim(record.dungeonLicense))
+    if dungeon == "" or dungeon == "NONE" then
+        dungeon = "T0D"
+    end
+    return raid .. " - " .. dungeon
+end
+
+function C.SortInviteNamesByRaidLicense(names, records)
+    table.sort(names, function(a, b)
+        local aRecord = type(records) == "table" and records[a]
+        local bRecord = type(records) == "table" and records[b]
+        local aTier = aRecord and C.LicenseTier(aRecord.raidLicense) or -1
+        local bTier = bRecord and C.LicenseTier(bRecord.raidLicense) or -1
+        if aTier ~= bTier then return aTier > bTier end
+        return a < b
+    end)
+    return names
 end
 
 function C.CharacterCanHire(record)
@@ -1511,6 +1654,27 @@ function C.CopyPreset(src)
     end
     out.sortLayout = src.sortLayout
     return out
+end
+
+-- Import owns its nested data; the existing Save flow keeps its own semantics.
+local function CopyImportValue(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] then return seen[value] end
+    local out = {}
+    seen[value] = out
+    for key, item in pairs(value) do out[key] = CopyImportValue(item, seen) end
+    return out
+end
+
+function C.ImportPreset(db, mode, source, destination)
+    if type(db) ~= "table" or (mode ~= "hire" and mode ~= "sort") then return false end
+    local bank = mode == "sort" and db.sortPresets or db.presets
+    local current = mode == "sort" and db.currentSortPreset or db.currentPreset
+    if type(bank) ~= "table" or current ~= destination or source == destination then return false end
+    if type(bank[source]) ~= "table" or type(bank[destination]) ~= "table" then return false end
+    bank[destination] = CopyImportValue(C.CopyPreset(bank[source]))
+    return true
 end
 
 function C.LegacyHireStub(realName)

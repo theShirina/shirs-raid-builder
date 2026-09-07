@@ -21,6 +21,7 @@ RELEASE_FILES = [
     "README.txt",
 ]
 PUBLIC_FILES = {
+    "AGENTS.md",
     ".gitattributes",
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -35,6 +36,11 @@ PUBLIC_FILES = {
     "addon/ShirsRaidBuilder/ShirsRaidBuilder_Core.lua",
     "scripts/build_release.py",
     "tests/test_core.lua",
+    "tests/test_individual_editor.lua",
+    "tests/test_legacy_characters.lua",
+    "tests/test_legacy_duplicates.lua",
+    "tests/test_legacy_list.lua",
+    "tests/test_preset_import.lua",
     "tests/test_mode_contract.lua",
     "tests/validate.py",
 }
@@ -114,6 +120,19 @@ def main() -> int:
     assert "Shir's Raid Builder core tests: PASS" in core_output
     mode_output = run([args.lua, str(ROOT / "tests" / "test_mode_contract.lua")], cwd=ROOT / "tests")
     assert "Shir's Raid Builder mode contract tests: PASS" in mode_output
+    individual_output = run([args.lua, str(ROOT / "tests" / "test_individual_editor.lua")], cwd=ROOT / "tests")
+    assert "Shir's Raid Builder individual editor tests: PASS" in individual_output
+    legacy_output = run([args.lua, str(ROOT / "tests" / "test_legacy_characters.lua")], cwd=ROOT / "tests")
+    assert "Shir's Raid Builder legacy character tests: PASS" in legacy_output
+    run([args.luac, "-p", str(ROOT / "tests" / "test_legacy_duplicates.lua")])
+    duplicate_output = run([args.lua, str(ROOT / "tests" / "test_legacy_duplicates.lua")], cwd=ROOT / "tests")
+    assert "Shir's Raid Builder legacy duplicate tests: PASS" in duplicate_output
+    run([args.luac, "-p", str(ROOT / "tests" / "test_legacy_list.lua")])
+    legacy_list_output = run([args.lua, str(ROOT / "tests" / "test_legacy_list.lua")], cwd=ROOT / "tests")
+    assert "Shir's Raid Builder legacy list tests: PASS" in legacy_list_output
+    run([args.luac, "-p", str(ROOT / "tests" / "test_preset_import.lua")])
+    import_output = run([args.lua, str(ROOT / "tests" / "test_preset_import.lua")], cwd=ROOT / "tests")
+    assert "Shir's Raid Builder preset import tests: PASS" in import_output
 
     build_script = ROOT / "scripts" / "build_release.py"
     run([sys.executable, str(build_script)])
