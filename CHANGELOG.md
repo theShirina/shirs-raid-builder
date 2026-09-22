@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.76
+
+This correction release fixes a combat-workload problem present in 0.75.
+
+### Fixed
+
+- Unrelated Microbot addon messages could repeatedly rescan saved profiles and do avoidable work during combat; they now pass through without repeating profile initialization while legacy-character updates and first-use database setup continue to work
+
 ## 0.75
 
 This correction release fixes three problems in the public 0.74 release.

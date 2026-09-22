@@ -6,13 +6,13 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-0.75.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.75/ShirsRaidBuilder-0.75.zip).
+Download [ShirsRaidBuilder-0.76.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v0.76/ShirsRaidBuilder-0.76.zip).
 
-## What's new in 0.75
+## What's new in 0.76
 
-- Legacy character data now refreshes from the Microbot addon message path
-- The import picker selects a profile from the page you are viewing
-- Incomplete or unknown licence data no longer shows an invented tier
+- Unrelated Microbot addon messages no longer repeat full profile initialization, reducing avoidable work during combat
+
+The previous release also added legacy-character refreshes, page-correct import selection, and blank licence tiers for incomplete or unknown source data.
 
 ## Before installing
 
