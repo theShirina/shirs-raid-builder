@@ -321,6 +321,77 @@ test('incomplete and unknown licences omit tier text without inventing data',fun
     assert(C.CurrentLicenseTier({raidLicense='t1',dungeonLicense='t1'})=='T1 - T1')
 end)
 
+-- Count real profile initialization through the registered Vanilla event path.
+-- Timing/FPS is deliberately not asserted by this offline regression.
+test('idle message traffic never repeats profile initialization',function()
+    local saved={presets={},currentPreset='Profile1'}
+    for i=1,15 do saved.presets['Profile'..i]={entries={{kind='legacy',charName='Caster',class='mage',role='rdps'}}} end
+    local h=boot(saved)
+    h.env.ShirsRaidBuilderMainFrame:Hide()
+    h.env.event='VARIABLES_LOADED'
+    for _,w in ipairs(h.frames) do if w.events.VARIABLES_LOADED then h:fire(w,'OnEvent') end end
+    local calls=0; local original=h.C.MigrateCharacterRoles
+    h.C.MigrateCharacterRoles=function(roles,presets,current)
+        calls=calls+1; return original(roles,presets,current)
+    end
+    local function receive(kind,a,b)
+        h.env.event=kind; h.env.arg2=b; h.env.arg3=nil
+        for _,w in ipairs(h.frames) do if w.events[kind] then h:fire(w,'OnEvent',a) end end
+    end
+    for i=1,100 do
+        receive('CHAT_MSG_ADDON','nexus','STATS:X unrelated')
+        receive('CHAT_MSG_MONSTER_WHISPER','unrelated','nexus')
+    end
+    assert(calls==0,'unrelated messages repeated full initialization: '..calls)
+    receive('CHAT_MSG_ADDON','nexus','[nexus] ACINFO:LEGACY:LIST Wiremage:Mage:0')
+    receive('CHAT_MSG_MONSTER_WHISPER','[nexus] ACINFO:LEGACY:LIST Wirepriest:Priest:1','nexus')
+    assert(calls==0,'legacy replies repeated full initialization')
+    assert(saved.legacyCharacters.wiremage=='mage' and saved.legacyCharacters.wirepriest=='priest')
+    -- Rebinding must still repair absent SavedVariables and retain pending data.
+    h.env.ShirsRaidBuilderDB=nil
+    receive('CHAT_MSG_MONSTER_WHISPER','[nexus] ACINFO:LEGACY:LIST Newmage:Mage:0','nexus')
+    assert(calls==1,'missing DB did not initialize once')
+    local rebound=h.env.ShirsRaidBuilderDB
+    assert(rebound.presets.Profile15 and rebound.legacyCharacters.newmage=='mage')
+    receive('CHAT_MSG_ADDON','nexus','unrelated')
+    assert(calls==1,'rebound DB initialized again')
+    rebound.presets=nil
+    receive('CHAT_MSG_ADDON','nexus','unrelated')
+    assert(calls==2 and type(rebound.presets)=='table','missing presets not repaired')
+end)
+
+test('listener first use binds and initializes an absent database',function()
+    local source=string.sub(fixture,1,boundary-1)
+    local first,last=string.find(source,"    env.SlashCmdList.SHIRSRAIDBUILDER('demo')",1,true)
+    assert(first and last)
+    source=string.sub(source,1,first-1)..'    env.ShirsRaidBuilderDB=nil'..string.sub(source,last+1)
+    local coldBoot=assert(loadstring(source..'\nreturn boot'))()
+    local h=coldBoot(); local listenerFactory
+    for i=1,32 do
+        local name,value=debug.getupvalue(h.env.SlashCmdList.SHIRSRAIDBUILDER,i)
+        if name=='EnsureInviteListener' then listenerFactory=value end
+    end
+    assert(listenerFactory,'real listener factory not found'); listenerFactory()
+    local calls=0; local original=h.C.MigrateCharacterRoles
+    h.C.MigrateCharacterRoles=function(roles,presets,current)
+        calls=calls+1; return original(roles,presets,current)
+    end
+    h.env.event='CHAT_MSG_MONSTER_WHISPER'; h.env.arg2='nexus'
+    for _,w in ipairs(h.frames) do
+        if w.events.CHAT_MSG_MONSTER_WHISPER then
+            h:fire(w,'OnEvent','[nexus] ACINFO:LEGACY:LIST Coldmage:Mage:0')
+            h:fire(w,'OnEvent','unrelated')
+        end
+    end
+    assert(calls==1,'cold listener must initialize exactly once')
+    local saved=h.env.ShirsRaidBuilderDB
+    assert(saved.presets[saved.currentPreset] and saved.legacyCharacters.coldmage=='mage')
+    -- The real startup boundary may run later and must keep the early reply.
+    h.env.event='ADDON_LOADED'
+    for _,w in ipairs(h.frames) do if w.events.ADDON_LOADED then h:fire(w,'OnEvent','ShirsRaidBuilder') end end
+    assert(h.env.ShirsRaidBuilderDB==saved and saved.legacyCharacters.coldmage=='mage')
+end)
+
 print('Legacy character tests: '..passes..' PASS, '..failures..' FAIL')
 assert(failures==0,'legacy character regression failures')
 print("Shir's Raid Builder legacy character tests: PASS")

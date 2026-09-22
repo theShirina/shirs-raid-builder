@@ -1064,7 +1064,9 @@ local function StoreInviteCharacters(records)
 end
 
 local function HandleInviteListMessage()
-    EnsureDB()
+    -- Startup initializes DB; unrelated chat must not rescan every preset.
+    -- Keep first-use and SavedVariable rebinding safe without a per-message migration.
+    if DB ~= ShirsRaidBuilderDB or type(DB.presets) ~= "table" then EnsureDB() end
     if C.StoreLegacyCharacterList(DB, arg1) or (event == "CHAT_MSG_ADDON" and C.StoreLegacyCharacterList(DB, arg2)) then
         if addLegacyFrame and addLegacyFrame:IsShown() then C.RefreshLegacyCharacter(addLegacyFrame) end
         return
