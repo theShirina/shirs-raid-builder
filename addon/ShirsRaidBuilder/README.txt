@@ -11,9 +11,17 @@ INSTALL
 WARNING
 Hiring commands can spend gold. Back up your WTF folder and use Preview before
 Execute. Import replaces the current profile after its overwrite warning.
-Opening /srb sends a Say command to refresh eligible hiring characters.
+Opening /srb is display-only and does not start synchronization.
+Synchronization runs on login or when you click Refresh Synchronization.
 Execute, Capture and Sort can query the Microbot addon channel, and Sort can
 convert a party to a raid when you are the party leader.
+
+Share Current Plan, beside Import, sends the open plan to a linked account; the
+recipient does not need any panels open. The recipient must explicitly approve
+a copy or a merge. A merge keeps occupied destination slots, reserves the
+incoming plan's original positions where they are free, and moves conflicting
+incoming cards to the lowest remaining free slots. If a merge does not fit, the
+plan is left unchanged. A shared plan is never executed automatically.
 
 Add Legacy remembers known class and role choices. Its picker can scroll through
 long lists, shows known classes in colour, and hides names already in the current

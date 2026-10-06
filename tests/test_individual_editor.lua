@@ -1,7 +1,7 @@
 -- Exact Lua 5.0.3, whole-module UI regression. No game input or real chat.
 -- Widgets model visibility, legacy globals, enabled state and strata; they do
 -- not prove native hit-testing, font geometry, or server delivery.
-local function boot(saved)
+local function boot(saved, player)
     local env = {}; setmetatable(env, {__index=_G}); env._G=env
     local frames, messages = {}, {}
     local methods = {}
@@ -12,6 +12,17 @@ local function boot(saved)
         if fn then fn() end -- Vanilla handlers receive global this / arg1.
         env.this=previousThis; env.arg1=previousArg
     end
+    function methods:SetScrollChild(v) self.scrollChild=v end
+    function methods:SetVerticalScroll(v) self.scroll=v end
+    function methods:GetVerticalScroll() return self.scroll or 0 end
+    function methods:SetMinMaxValues(a,b) self.minimum=a; self.maximum=b end
+    function methods:SetValueStep(v) self.step=v end
+    function methods:SetOrientation(v) self.orientation=v end
+    function methods:SetThumbTexture(v) self.thumb=v end
+    function methods:SetValue(v) local old=self.value; self.value=v; if old~=v then dispatch(self,'OnValueChanged',v) end end
+    function methods:GetValue() return self.value or 0 end
+    function methods:EnableMouseWheel(v) self.wheel=v end
+    function methods:Raise() self.raised=true end
     function methods:SetScript(k,v) self.scripts[k]=v end
     function methods:GetScript(k) return self.scripts[k] end
     function methods:SetWidth(v) self.width=v end
@@ -34,6 +45,7 @@ local function boot(saved)
         if changed then dispatch(self,'OnTextChanged') end
     end
     function methods:GetText() return self.text or '' end
+    function methods:GetStringWidth() return string.len(self.text or '')*7 end -- Fixed-pitch stand-in; real font metrics are not modelled.
     function methods:IsShown() return self.shown and 1 or nil end
     function methods:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) and 1 or nil end
     function methods:Show() local old=self.shown; self.shown=true; if not old then dispatch(self,'OnShow') end end
@@ -55,7 +67,8 @@ local function boot(saved)
     function methods:SetBackdropColor(...) self.backdropColor=arg end
     function methods:SetBackdrop(v) self.backdrop=v end
     local noop=function() end
-    for _,name in ipairs({'SetBackdropBorderColor','SetTextColor','SetJustifyH','SetJustifyV','SetFontObject','SetFont','SetNonSpaceWrap','SetAutoFocus','SetMaxLetters','EnableMouse','EnableMouseWheel','SetMovable','RegisterForDrag','RegisterForClicks','StartMoving','StopMovingOrSizing','SetClampedToScreen','SetScale','SetAlpha','SetOwner','AddLine','AddDoubleLine','SetTexture','SetTexCoord','SetVertexColor','SetBlendMode','HighlightText','SetMultiLine','SetNumeric','SetNormalTexture','SetHighlightTexture','SetPushedTexture'}) do methods[name]=noop end
+    for _,name in ipairs({'SetBackdropBorderColor','SetJustifyH','SetJustifyV','SetFontObject','SetFont','SetNonSpaceWrap','SetAutoFocus','SetMaxLetters','EnableMouse','SetMovable','RegisterForDrag','RegisterForClicks','StartMoving','StopMovingOrSizing','SetClampedToScreen','SetScale','SetAlpha','SetOwner','AddLine','AddDoubleLine','SetTexture','SetTexCoord','SetVertexColor','SetBlendMode','HighlightText','SetMultiLine','SetNumeric','SetNormalTexture','SetHighlightTexture','SetPushedTexture'}) do methods[name]=noop end
+    function methods:SetTextColor(...) self.textColor=arg end
     local function widget(kind,name,parent)
         local w={kind=kind,name=name,parent=parent,shown=true,enabled=true,scripts={},events={},fonts={}}
         setmetatable(w,{__index=methods}); table.insert(frames,w)
@@ -69,7 +82,7 @@ local function boot(saved)
     env.GetAddOnMetadata=function() return '0.74' end
     env.GetTime=function() return 100 end; env.time=function() return 1800000000 end
     env.GetRealmName=function() return 'FixtureRealm' end
-    env.UnitName=function(unit) if unit=='player' then return 'Tester' end end
+    env.UnitName=function(unit) if unit=='player' then return player or 'Tester' end end
     env.UnitClass=function() return 'Warrior','WARRIOR' end
     env.UnitFactionGroup=function() return 'Alliance' end
     env.UnitLevel=function() return 60 end
@@ -115,6 +128,17 @@ local function boot(saved)
         return env.ShirsRaidBuilderSetupFrame,d
     end
     function h:choose(button,label)
+        if button.scrollCharacters then
+            self:click(button)
+            local scroll=env.ShirsRaidBuilderCharacterChoices.listScroll
+            for i,name in ipairs(scroll.items) do
+                if name==label then
+                    scroll.offset=math.max(0,i-5); scroll.Paint()
+                    self:click(scroll.rows[i-scroll.offset]); return
+                end
+            end
+            error('character option missing: '..label)
+        end
         self:click(button); self:click(self:button(env.ShirsRaidBuilderChoiceMenu,label))
     end
     function h:addDrink()
@@ -424,6 +448,189 @@ test('stale structured close does not restore invalid individual editor',functio
     h:entry('Shirmag').class='warlock'
     h:click(h:button(s,'Close'))
     assert(hidden(s) and hidden(d))
+end)
+
+-- boot() always runs the demo, and EnsureDB/PadRaidSlots may reshape or replace boot-time entries.
+-- So fixtures are seeded into the live preset AFTER boot, then refreshed, then verified by a manual scan.
+local function scanHires(entries,name)
+    local wanted=string.lower(name); local n=0
+    for slot=1,40 do
+        local e=entries[slot]
+        if e and e.kind=='normal' and string.lower((string.gsub(e.account or '','^%s*(.-)%s*$','%1')))==wanted then n=n+1 end
+    end
+    return n
+end
+local function seedPlan(h,slots,expect)
+    local entries={}
+    for slot=1,40 do entries[slot]=slots[slot] or {kind='empty'} end
+    h:preset().entries=entries
+    h.env.RefreshComposition()
+    local live=h:preset().entries
+    for name,want in pairs(expect) do
+        local got=scanHires(live,name)
+        assert(got==want,'seeded baseline for '..name..' expected '..want..' got '..got)
+    end
+    return live
+end
+
+test('Add Normal and local sidebar show each hiring character own count on a sparse board',function()
+    local function hire(account) return {kind='normal',account=account,tier='t2r',class='warrior',role='tank',spec='',race='human',gender='male'} end
+    local h=boot({currentPreset='Default',presets={Default={entries={},denyRules={},setupRules={}}},
+        inviteCharacters={Alpha={name='Alpha',level=60,raidLicense='t3r',dungeonLicense='t2d'},
+            Beta={name='Beta',level=60,raidLicense='t2r',dungeonLicense='t1d'}}})
+    seedPlan(h,{[36]={kind='legacy',charName='Alpha',class='mage',role='rdps',spec='frost',denyList={}},
+        [37]=hire('Alpha'),[38]=hire(' alpha '),[39]=hire('ALPHA'),[40]=hire('Beta')},{Alpha=3,Beta=1})
+    local main=h.env.ShirsRaidBuilderMainFrame
+    -- Returns the rendered sidebar row; assertions below read its visible FontStrings, not the model.
+    local function sidebarRow(name)
+        for _,row in ipairs(main.accountRows) do if row.model and row.model.name==name then return row end end
+        error('sidebar row missing: '..name)
+    end
+    local function shown(name)
+        local row=sidebarRow(name); local count=row.countText
+        assert(count and count.kind=='FontString','sidebar row has no dedicated count FontString: '..name)
+        assert(count:IsVisible() and count:GetText()~='','sidebar count FontString not visible: '..name)
+        return count:GetText()
+    end
+    local function sidebar(name) return {countText=shown(name)} end
+    h:click(h:button(main,'Add Normal'))
+    local frame=h.env.ShirsRaidBuilderAddNormal
+    assert(frame.characterButton.label:GetText()=='Alpha')
+    assert(frame.countText and frame.countText:GetText()=='3/4','selected character count missing before selection change')
+    assert(sidebar('Alpha').countText=='3/4' and sidebar('Beta').countText=='1/4','local sidebar lost per-character counts')
+    -- Model contract is preserved, and the count sits right of a title shrunk to its measured width.
+    local alpha=sidebarRow('Alpha')
+    assert(alpha.model.title=='Alpha - T3R' and alpha.lines[1]:GetText()==alpha.model.title,'title text contract changed')
+    assert(alpha.model.countText=='3/4' and alpha.lines[2]:GetText()==alpha.model.raids,'raids line/model contract changed')
+    assert(alpha.countText.point and (alpha.countText.point[1]=='TOPRIGHT' or alpha.countText.point[1]=='RIGHT'),'count must be anchored right')
+    assert(alpha.countText.parent==alpha,'count FontString must belong to the row')
+    local inset=math.abs(alpha.countText.point[4] or 0)
+    local titleRight=4+alpha.lines[1]:GetWidth()
+    local countLeft=alpha:GetWidth()-inset-alpha.countText:GetStringWidth()
+    assert(titleRight<countLeft,'title width overlaps count: '..titleRight..' >= '..countLeft)
+    h:choose(frame.characterButton,'Beta')
+    assert(frame.countText:GetText()=='1/4','count must refresh on actual dropdown change')
+    h:click(h:button(frame,'Add'))
+    assert(frame.countText:GetText()=='2/4' and sidebar('Beta').countText=='2/4' and sidebar('Alpha').countText=='3/4','add must refresh label and sidebar')
+    h:choose(frame.characterButton,'Alpha'); assert(frame.countText:GetText()=='3/4')
+    h:click(h:button(frame,'Add')); assert(frame.countText:GetText()=='4/4' and sidebar('Alpha').countText=='4/4')
+    local before=h:preset()
+    h:click(h:button(frame,'Add'))
+    local alphas=scanHires(before.entries,'Alpha')
+    assert(alphas==4,'fifth Alpha hire must be blocked on a sparse board, got '..alphas)
+    assert(frame.countText:GetText()=='4/4')
+    before.entries[37]={kind='empty'}; h.env.RefreshComposition()
+    assert(frame.countText:GetText()=='3/4' and sidebar('Alpha').countText=='3/4','removal/plan refresh must update both counts')
+end)
+
+local function snapshot(value)
+    if type(value)~='table' then return type(value)..':'..tostring(value) end
+    local t={}; for k,v in pairs(value) do table.insert(t,snapshot(k)..'='..snapshot(v)) end
+    table.sort(t); return '{'..table.concat(t,',')..'}'
+end
+local function hireOf(account) return {kind='normal',account=account,tier='t2r',class='warrior',role='tank',spec='',race='human',gender='male'} end
+
+test('long name plus wide count keeps title clear of the count and hides count on reused rows',function()
+    local slots={}
+    for slot=31,40 do slots[slot]=hireOf('Abcdefghijkl') end
+    local h=boot({currentPreset='Default',presets={Default={entries={},denyRules={},setupRules={}}},
+        inviteCharacters={Abcdefghijkl={name='Abcdefghijkl',level=60,raidLicense='t3r',dungeonLicense='t2d'},
+            Zed={name='Zed',level=60,raidLicense='t1r',dungeonLicense='t1d'}}})
+    seedPlan(h,slots,{Abcdefghijkl=10,Zed=0})
+    local main=h.env.ShirsRaidBuilderMainFrame
+    local long,zed
+    for _,row in ipairs(main.accountRows) do
+        if row.model and row.model.name=='Abcdefghijkl' then long=row elseif row.model and row.model.name=='Zed' then zed=row end
+    end
+    assert(long and zed,'fixture rows missing')
+    assert(long.countText and long.countText:IsVisible() and long.countText:GetText()=='10/4','historic over-limit count must display unclamped')
+    local inset=math.abs(long.countText.point[4] or 0)
+    local titleRight=4+long.lines[1]:GetWidth()
+    local countLeft=long:GetWidth()-inset-long.countText:GetStringWidth()
+    assert(titleRight<countLeft,'title overlaps count: '..titleRight..' >= '..countLeft)
+    assert(long.lines[1]:GetText()==long.model.title,'title text must not be truncated by editing the string')
+    assert(zed.countText and zed.countText:IsVisible() and zed.countText:GetText()=='0/4','zero hires must show 0/4')
+    -- Pooled row reuse: a row that no longer carries a count must not keep a stale one.
+    h:preset().entries={}; h.env.RefreshComposition()
+    for _,row in ipairs(main.accountRows) do
+        if row.model and row.model.name=='Abcdefghijkl' then assert(row.countText:GetText()=='0/4','stale count on reused row') end
+    end
+    h.C.DrawCharacterLicenseRow(h.C.CharacterLicenseRow('Plain',{raidLicense='t1r'},nil,''),-500)
+    for _,row in ipairs(main.accountRows) do
+        if row.model and row.model.name=='Plain' then assert(not row.countText or not row.countText:IsVisible(),'generic model without count must show none') end
+    end
+end)
+
+test('linked read-only row shows the caller count without becoming editable',function()
+    local h=boot({currentPreset='Default',presets={Default={entries={},denyRules={},setupRules={}}}})
+    seedPlan(h,{[38]=hireOf('Bob'),[39]=hireOf(' BOB ')},{Bob=2})
+    local before=snapshot(h:preset()); local queue=snapshot(h.C.BuildQueue(h:preset()))
+    local row=h.C.DrawCharacterLicenseRow(h.C.CharacterLicenseRow('Bob',{raidLicense='t2r'},2,'',{peer='x'}),-300)
+    assert(row.model.readOnly and row.countText and row.countText:IsVisible() and row.countText:GetText()=='2/4','linked row must display caller count')
+    assert(not row:GetScript('OnEnter'),'read-only row grew a hover handler')
+    if row:GetScript('OnClick') then h:fire(row,'OnClick','LeftButton') end
+    assert(snapshot(h:preset())==before and snapshot(h.C.BuildQueue(h:preset()))==queue,'linked count changed plan or action queue')
+end)
+
+test('Execute rejects an over-limit plan without any chat, addon or action call',function()
+    local slots={}
+    for slot=36,40 do slots[slot]=hireOf('Alpha') end -- 5 hires > 4 per character
+    local h=boot({currentPreset='Default',presets={Default={entries={},denyRules={},setupRules={}}},
+        inviteCharacters={Alpha={name='Alpha',level=60,raidLicense='t3r',dungeonLicense='t2d'}}})
+    seedPlan(h,slots,{Alpha=5}) -- exactly 5 Alpha hires must be present BEFORE Execute
+    local calls={chat=0,addon=0,action=0}
+    h.env.SendChatMessage=function() calls.chat=calls.chat+1 end
+    h.env.SendAddonMessage=function() calls.addon=calls.addon+1 end
+    h.env.CCP_Send=function() calls.action=calls.action+1 end
+    h.env.RunMacroText=function() calls.action=calls.action+1 end
+    h.env.TargetByName=function() calls.action=calls.action+1 end
+    h.env.InviteByName=function() calls.action=calls.action+1 end
+    local before=snapshot(h:preset())
+    local main=h.env.ShirsRaidBuilderMainFrame
+    h:click(h:button(main,'Execute'))
+    for _,frame in ipairs(h.frames) do
+        if frame.scripts.OnUpdate then h.env.GetTime=function() return 200 end; h:fire(frame,'OnUpdate',20) end
+    end
+    assert(calls.chat==0 and calls.addon==0 and calls.action==0,
+        'over-limit Execute reached the game: chat='..calls.chat..' addon='..calls.addon..' action='..calls.action)
+    assert(snapshot(h:preset())==before,'rejected Execute changed the preset')
+    assert(scanHires(h:preset().entries,'Alpha')==5,'historic over-limit plan was trimmed')
+end)
+
+test('Execute sends a lone hire once before its group commands',function()
+    -- One hire and one matching deny rule. The companion list is a SYNTHETIC GRINFO reply
+    -- delivered as CHAT_MSG_ADDON from nexus; the hired companion joins the party.
+    local h=boot({currentPreset='Default',presets={Default={entries={},denyRules={{class='warrior',role='tank',abilities={'Taunt'}}},setupRules={}}},
+        inviteCharacters={Alpha={name='Alpha',level=60,raidLicense='t3r',dungeonLicense='t2d'}}})
+    seedPlan(h,{[1]=hireOf('Alpha')},{Alpha=1})
+    local clock,said,whispered,party,replies=100,{},{},{},{}
+    h.env.GetTime=function() return clock end
+    h.env.SendChatMessage=function(text,route,_,target)
+        if route=='WHISPER' then table.insert(whispered,target..': '..text); return end
+        table.insert(said,text)
+        if string.find(text,'^%.z addinvite Alpha ') then table.insert(party,'Alphacomp') end
+    end
+    h.env.SendAddonMessage=function(prefix,text)
+        if prefix=='nexus' and text=='GRINFO:ALL:FULL' then table.insert(replies,'[nexus] GRINFO:ALL:FULL Alphacomp:Human:Warrior:Tank:Uncommon:Alpha') end
+    end
+    h.env.GetNumPartyMembers=function() return table.getn(party) end
+    h.env.UnitName=function(unit)
+        if unit=='player' then return 'Tester' end
+        local _,_,n=string.find(unit,'^party(%d+)$')
+        return n and party[tonumber(n)]
+    end
+    h:click(h:button(h.env.ShirsRaidBuilderMainFrame,'Execute'))
+    for _=1,120 do
+        clock=clock+0.25
+        for _,w in ipairs(h.frames) do if w.scripts.OnUpdate and w:IsVisible() then h:fire(w,'OnUpdate',0.25) end end
+        while table.getn(replies)>0 do
+            local text=table.remove(replies,1)
+            h.env.event='CHAT_MSG_ADDON'; h.env.arg2='nexus'
+            for _,w in ipairs(h.frames) do if w.events.CHAT_MSG_ADDON and w.scripts.OnEvent then h:fire(w,'OnEvent',text) end end
+        end
+    end
+    assert(table.getn(said)==1 and said[1]=='.z addinvite Alpha t2r warrior tank default human male','lone hire sent '..table.getn(said)..' time(s): '..table.concat(said,' | '))
+    assert(table.getn(whispered)==1 and whispered[1]=='Alphacomp: deny add Taunt','group deny not sent once to the hired companion: '..table.concat(whispered,' | '))
 end)
 
 print('Individual editor regressions: '..passes..' PASS, '..failures..' FAIL')

@@ -52,7 +52,8 @@ assert(string.find(source, "orderActionAttempts > 3", 1, true), "Sort mode must 
 assert(string.find(source, "orderProcessed", 1, true), "Sort mode must mark one completed pass and continue to later groups")
 assert(string.find(source, 'return "order-partial"', 1, true), "Sort mode must report partial exact ordering after checking every group")
 assert(string.find(source, 'line1:SetText(tostring(spawnNumber) .. " " .. name)', 1, true), "slot number and name must share one text run so low UI scales cannot overlap them")
-assert(string.find(source, 'line2:SetText((CLASS_LABELS[classKey] or classKey) .. " " .. (ROLE_SHORT[entry.role] or entry.role or ""))', 1, true), "class and role must use the narrow single-space card label")
+assert(string.find(source, 'C.FitCardLine(line2, row.tierText, CLASS_LABELS[classKey] or classKey, ROLE_SHORT[entry.role] or entry.role or "")', 1, true)
+    and string.find(source, 'line:SetText(cut .. " " .. role)', 1, true), "class and role must use the narrow single-space card label")
 assert(string.find(source, 'b:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -2)', 1, true), "context buttons must chain from the prior button for stable low-scale spacing")
 assert(string.find(source, 'if type(DB.characterRoles) ~= "table" then DB.characterRoles = {} end', 1, true), "account DB must retain player roles by character")
 assert(string.find(source, 'C.RememberCharacterRole(DB.characterRoles, live.charName, live.class, value)', 1, true), "changing a player role must persist it by character")
@@ -80,7 +81,7 @@ assert(string.find(denyRemoveBody, "all[ri]==rule", 1, true), "deny Remove must 
 assert(string.find(denyRemoveBody, "table.remove(all,ri)", 1, true), "deny Remove must delete only its own rule")
 assert(string.find(denyRemoveBody, "C.ResetDenyRuleEditor()", 1, true), "removing a deny rule must immediately enter fresh-rule mode")
 assert(string.find(source, 'MakeButton(settingsFrame,"New",64,18,14,C.ResetDenyRuleEditor,true)', 1, true), "New and Remove must use the same deny editor reset")
-assert(string.find(source, "C.AppendLegacyGroupMembers(C.KeepPresentCompanions(executeCompanionList, present), EnsureDB().entries, present)", 1, true), "group commands must include legacy board members the server companion list omits")
+assert(string.find(source, "C.AppendLegacyGroupMembers(C.KeepPresentCompanions(executeCompanionList, present), plan.entries, present)", 1, true), "group commands must include legacy board members the server companion list omits")
 assert(string.find(source, "C.latestCompanionList = companions", 1, true), "GRINFO replies must be cached even before execution starts")
 assert(string.find(source, "C.InfoCoversGroup", 1, true), "cached GRINFO data must be checked against the current group")
 local cachePosition = assert(string.find(source, "C.latestCompanionList = companions", 1, true))
@@ -98,15 +99,24 @@ assert(string.find(source, 'if type(ShirsRaidBuilderDB) ~= "table" then ShirsRai
 do
     dofile("../addon/ShirsRaidBuilder/ShirsRaidBuilder_Core.lua")
     local C = ShirsRaidBuilderCore
-    local first = assert(string.find(source, "function RefreshAccountPanel()", 1, true))
+    local first = assert(string.find(source, "function C.AccountScroll(value)", 1, true))
     local last = assert(string.find(source, "CloseContext = function()", first, true))
     local body = string.sub(source, first, last-1)
+    local collectStart=assert(string.find(source,'function C.AccountReadLocal(records)',1,true))
+    local collectEnd=assert(string.find(source,'function C.LicenseSidebar(y)',collectStart,true))
+    body=string.sub(source,collectStart,collectEnd-1)..body
     local function widget(parent)
         local w = {parent=parent, fonts={}, scripts={}, shown=true}
         function w:SetWidth(v) self.width=v end
         function w:SetHeight(v) self.height=v end
+        function w:GetHeight() return self.height or 490 end
+        function w:ClearAllPoints() self.point=nil end
+        function w:EnableMouseWheel(v) self.wheel=v end
+        function w:GetVerticalScroll() return self.scroll or 0 end
+        function w:SetVerticalScroll(v) self.scroll=v end
         function w:SetPoint(...) self.point=arg end
         function w:SetText(v) self.text=v end
+        function w:GetStringWidth() return string.len(self.text or "")*6 end
         function w:SetTextColor(...) end
         function w:SetJustifyH(v) self.justify=v end
         function w:SetScript(k,v) self.scripts[k]=v end
@@ -119,11 +129,13 @@ do
         return w
     end
     local content = widget()
-    local frame = {accountContent=content}
+    local frame = {accountContent=content,accountScroll=widget()}
     local db = {uiMode="hire", inviteCharacters={
-        Alpha={raidLicense="t4r",dungeonLicense="t2d"},
-        Beta={raidLicense="t2r",dungeonLicense="NONE"},
-        Gamma={raidLicense="t1r",dungeonLicense="t1d"}}}
+        Alpha={name="Alpha",level=60,raidLicense="t4r",dungeonLicense="t2d"},
+        Beta={name="Beta",level=60,raidLicense="t2r",dungeonLicense="none"},
+        Gamma={name="Gamma",level=60,raidLicense="t1r",dungeonLicense="t1d"},
+        Unknown={name="Unknown",level=60}, Young={name="Young",level=59}}}
+    C.LinkNonce=function() return '1234567890123456' end
     local preset = {entries={{kind="normal",account="Alpha"}}}
     local status
     local env = {C=C, DB=db, mainFrame=frame,
@@ -131,20 +143,26 @@ do
         DiscoverCharacterNames=function() return {"Unknown", "Gamma", "Beta", "Alpha"} end,
         CreateFrame=function(kind,name,parent) return widget(parent) end,
         GetRealmName=function() return "Realm" end,
+        UnitName=function() return "Alpha" end, UnitLevel=function() return 60 end,
         time=function() return 1800000000 end,
         SetStatus=function(v) status=v end}
     setmetatable(env, {__index=_G})
     local chunk=assert(loadstring(body, "account renderer")); setfenv(chunk,env); chunk()
     local function refresh() env.RefreshAccountPanel(); return frame.accountRows end
     local rows=refresh()
-    assert(table.getn(rows)==4 and rows[1].fonts[1].text=="Alpha  [1]")
-    assert(rows[1].fonts[2].text=="T4R - T2D" and rows[2].fonts[2].text=="T2R - T0D")
-    assert(rows[1].height==34 and rows[4].height==22, "no provider preserves baseline geometry")
+    assert(table.getn(rows)==4 and rows[1].lines[1].text=="Alpha - T4R")
+    assert(table.getn(rows[1].fonts)==3 and rows[1].lines[2].text=="", "two text lines plus the count region")
+    assert(rows[1].fonts[3]==rows[1].countText, "count is the third FontString")
+    assert(rows[2].lines[1].text=="Beta - T2R")
+    assert(rows[1].countText.text=="1/4", "Alpha has one normal hire in the preset")
+    assert(rows[2].countText.text=="0/4", "Beta has zero normal hires in the preset")
+    assert(rows[1].lines[1].width==153-rows[1].countText:GetStringWidth()-6, "title width must leave room for the measured count")
+    assert(rows[1].height==20 and rows[4].height==20, "unknown licenses retain compact rows")
     local sep=string.char(31)
     local function state(names)
         local instances={}
         for _,name in ipairs(names) do table.insert(instances,{name=name,id="42",readyAt=1800000100}) end
-        return {raidInfo={known=true,instances=instances}}
+        return {raidInfo={known=true,observedAt=1800000000,instances=instances}}
     end
     local provider={cooldownsByCharacter={
         ["Realm"..sep.."Alpha"]=state({"Naxxramas","Ahn'Qiraj Temple","Blackwing Lair","Molten Core"}),
@@ -152,16 +170,20 @@ do
         ["Realm"..sep.."Gamma"]=state({"Zul'Gurub"}),
         ["Realm"..sep.."Unknown"]=state({"Blackwing Lair"}),
         ["Foreign"..sep.."Gamma"]=state({"Naxxramas"})}}
-    env.ShirsLazyTrixDB=provider
+    C.mcpRealm='Realm'; C.mcpRows={}
+    for key,value in pairs(provider.cooldownsByCharacter) do
+        local _,_,character=string.find(key,'^Realm'..sep..'(.+)$')
+        if character then C.mcpRows[string.lower(character)]={known=true,observed=value.raidInfo.observedAt,entries=value.raidInfo.instances} end
+    end
     rows=refresh()
-    assert(rows[1].fonts[3] and rows[1].fonts[3].text=="MC BWL AQ40 NAX", "confirmed saves render below the license pair")
-    assert(rows[2].fonts[3].text=="MC", "each character renders its own saves")
-    assert(table.getn(rows[3].fonts)==2 and rows[3].height==34, "no confirmed saves keeps baseline row")
-    assert(rows[4].fonts[2].text=="BWL", "missing license still shows confirmed saves below the name")
-    assert(rows[1].fonts[1].text=="Alpha  [1]" and rows[1].fonts[2].text=="T4R - T2D")
+    assert(rows[1].lines[2].text=="MC BWL AQ40 NAXX", "confirmed saves render in one second line")
+    assert(rows[2].lines[2].text=="MC", "each character renders its own saves")
+    assert(rows[3].lines[2].text=="" and rows[3].height==20, "no confirmed saves keeps baseline row")
+    assert(rows[4].lines[2].text=="BWL", "missing license still shows confirmed saves")
+    assert(rows[1].lines[1].text=="Alpha - T4R")
     for _,i in ipairs({1,2,4}) do
-        local row=rows[i]; local n=table.getn(row.fonts)
-        local raid=row.fonts[n]; local preceding=row.fonts[n-1]
+        local row=rows[i]
+        local raid=row.lines[2]; local preceding=row.lines[1]
         assert(raid.parent==row and raid.point[2]==row and raid.point[1]=="TOPLEFT")
         assert(preceding.point[1]=="TOPLEFT" and raid.point[5] <= preceding.point[5]-14, "raid text must sit below prior line")
         assert(raid.width and raid.width+raid.point[4]<=row.width, "raid line must stay inside row width")
@@ -172,17 +194,38 @@ do
     rows[1].scripts.OnClick()
     assert(status=="Alpha has 1 hire(s) in this preset.", "row click semantics stay unchanged")
     local old=rows
-    provider.cooldownsByCharacter["Realm"..sep.."Alpha"].raidInfo.instances={}
+    C.mcpRows.alpha.entries={}
     rows=refresh()
-    assert(table.getn(rows[1].fonts)==2 and rows[1].height==34, "refresh removes stale raid text and extra height")
-    for _,row in ipairs(old) do assert(not row.shown and row.parent==nil, "old rows must be hidden and detached") end
+    assert(rows[1].lines[2].text=="" and rows[1].height==20, "refresh removes stale raid text and extra height")
+    for i,row in ipairs(old) do assert(row==rows[i] and row.parent==content, "refresh reuses the same bounded row pool") end
     db.uiMode="sort"; refresh(); assert(not content.shown, "Sort mode hides all account labels")
-    db.uiMode="hire"; env.ShirsLazyTrixDB=nil; rows=refresh()
-    assert(content.shown and table.getn(rows[2].fonts)==2 and rows[4].height==22)
+    db.uiMode="hire"; C.mcpRows=nil; rows=refresh()
+    assert(content.shown and rows[2].lines[2].text=="MC" and rows[4].height==34, "provider absence preserves saved observations")
     env.ShirsLazyTrixDB=provider; env.time=nil; rows=refresh()
-    assert(table.getn(rows[2].fonts)==2, "missing clock must not guess saved status")
+    assert(rows[2].lines[2].text=="", "missing clock must not guess saved status")
     assert(provider.cooldownsByCharacter["Realm"..sep.."Beta"].raidInfo.instances[1].readyAt==1800000100)
     assert(not string.find(body,"SendChatMessage",1,true) and not string.find(body,"RequestRaidInfo",1,true), "rendering must not query or send")
+end
+
+do
+    local first = assert(string.find(source, "-- Account link adapter.", 1, true))
+    local last = assert(string.find(source, "local function CreateMain()", first, true))
+    local peer = string.sub(source, first, last - 1)
+    -- v2 reads the local license list; remove only that exact read from the
+    -- action denylist scan, not a broad '.z add' or SAY exemption.
+    local guarded=string.gsub(peer,'pcall%(SendChatMessage,"%.z addinvite list","SAY"%)','LOCAL_READ')
+    guarded=string.gsub(guarded,'pcall%(SendChatMessage,command,"SAY"%)','MCP_READ')
+    local handStart=assert(string.find(guarded,"-- Durable handoffs carry a frozen board",1,true))
+    local handEnd=assert(string.find(guarded,"function C.OpenPeerPOC()",handStart,true))
+    guarded=string.sub(guarded,1,handStart-1)..string.sub(guarded,handEnd)
+    for _, forbidden in ipairs({"ExecuteQueue", "BuildQueue", "SendQueueEntry", "SendAddonMessage", ".z add", "deny add", '"SAY"', "DB.presets ="}) do
+        assert(not string.find(guarded, forbidden, 1, true), "peer adapter crosses advisory-only boundary: " .. forbidden)
+    end
+    assert(string.find(peer, 'pcall(SendChatMessage, packet, "WHISPER", nil, s.peer)', 1, true))
+    assert(not string.find(peer, '"Execute"', 1, true), "no remote Execute control")
+    assert(string.find(source, "local HIRE_DELAY_MIN = 7.5", 1, true))
+    assert(string.find(source, "local HIRE_DELAY_MAX = 8.5", 1, true))
+    assert(string.find(source, "local WHISPER_GAP_SECONDS = 0.7", 1, true))
 end
 
 print("Shir's Raid Builder mode contract tests: PASS")
