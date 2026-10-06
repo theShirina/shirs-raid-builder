@@ -299,18 +299,18 @@ assert(C.BuildNormalHireCommand(normal) == ".z addinvite Longname t2r shaman hea
 
 local preset = { entries = { normal, legacy, { kind = "legacy", charName = "Warlocka", role = "healer", denyList = {} } } }
 local queue = C.BuildQueue(preset)
-assert(table.getn(queue) == 5)
+assert(table.getn(queue) == 4)
 assert(queue[1].kind == "normal" and queue[1].character == "Longname")
 assert(queue[2].kind == "hire" and queue[2].character == "Example")
 assert(queue[3].kind == "hire" and queue[3].character == "Warlocka")
 assert(queue[4].kind == "deny" and queue[4].phase == "legacy-custom" and queue[4].ability == "Lightning Bolt" and queue[4].chatType == "WHISPER" and queue[4].target == "Example-lite")
-assert(queue[5].kind == "deny" and queue[5].ability == "Chain Lightning")
+assert(queue[4].command == "deny add Lightning Bolt, Chain Lightning")
 
 local previewQueue = C.BuildQueue(preset)
 assert(previewQueue[1].kind == "normal")
 assert(previewQueue[2].kind == "hire")
 assert(previewQueue[3].kind == "hire")
-assert(previewQueue[4].command == "deny add Lightning Bolt")
+assert(previewQueue[4].command == "deny add Lightning Bolt, Chain Lightning")
 
 local overwriteQueue = C.BuildQueue({
     entries = {legacy},
@@ -319,9 +319,8 @@ local overwriteQueue = C.BuildQueue({
 assert(overwriteQueue[1].kind == "hire")
 assert(overwriteQueue[2].phase == "class-setup")
 assert(overwriteQueue[5].phase == "class-setup")
-assert(overwriteQueue[6].phase == "legacy-custom" and overwriteQueue[6].command == "deny add Lightning Bolt")
-assert(overwriteQueue[7].phase == "legacy-custom" and overwriteQueue[7].ability == "Chain Lightning")
-assert(table.getn(overwriteQueue) == 7)
+assert(overwriteQueue[6].phase == "legacy-custom" and overwriteQueue[6].command == "deny add Lightning Bolt, Chain Lightning")
+assert(table.getn(overwriteQueue) == 6)
 
 local petLegacy = {kind="legacy", sourceName="Warlocka", charName="Warlocka", class="warlock", role="rdps", pet="Voidwalker", denyList={}}
 local petQueue = C.BuildQueue({entries={petLegacy}})
@@ -791,6 +790,8 @@ assert(moved ~= nil and rescued.currentPreset == "ZG")
 assert(rescued.sortPresets[moved].entries[1].kind == "guest")
 assert(C.HireSlotCount({{kind="normal"},{kind="legacy"},{kind="guest"},{kind="player"}}) == 2)
 
+-- Scoped so these fixtures do not count against the chunk's local-variable limit.
+do (function()
 local cappedHires = {
     {kind="normal", account="Shir"},
     {kind="normal", account="shir"},
@@ -814,6 +815,80 @@ local acceptedBoard = C.PadRaidSlots({cappedHires[1], cappedHires[2], cappedHire
 local acceptedSlot, acceptedReason = C.TryAddNormalHire(acceptedBoard, {kind="normal", account="Shir"}, 4, 10)
 assert(acceptedSlot == 4 and acceptedReason == nil)
 assert(C.NormalHireCountForCharacter(acceptedBoard, "Shir") == 4)
+
+-- Fixed 40-slot boards are sparse (nil holes, no padding); table.getn cannot see high slots.
+local function sparseBoard()
+    local board = {}
+    board[33] = {kind="legacy", charName="Shir", account="Shir"}
+    board[34] = {kind="guest", account="Shir"}
+    board[35] = {kind="empty", account="Shir"}
+    board[36] = {kind="player", charName="Shir", account="Shir"}
+    board[37] = {kind="normal", account="Shir"}
+    board[38] = {kind="normal", account="  sHIR "}
+    board[39] = {kind="normal", account="SHIR"}
+    board[40] = {kind="normal", account="Other"}
+    return board
+end
+local sparse = sparseBoard()
+assert(C.NormalHireCountForCharacter(sparse, "Shir") == 3, "sparse high-slot hires must be counted")
+assert(C.NormalHireCountForCharacter(sparse, " shir ") == 3)
+assert(C.NormalHireCountForCharacter(sparse, "Other") == 1)
+local sparse4Slot, sparse4Reason = C.TryAddNormalHire(sparse, {kind="normal", account="shIR"}, 4, 40)
+assert(sparse4Slot == 1 and sparse4Reason == nil, "3 -> 4 must be allowed on a sparse board")
+assert(sparse[1].account == "shIR" and C.NormalHireCountForCharacter(sparse, "Shir") == 4)
+local sparse5Slot, sparse5Reason = C.TryAddNormalHire(sparse, {kind="normal", account=" SHir "}, 4, 40)
+assert(sparse5Slot == nil and sparse5Reason == "character-limit", "4 -> 5 must be blocked on a sparse board")
+assert(sparse[2] == nil and C.NormalHireCountForCharacter(sparse, "Shir") == 4)
+local otherSlot = C.TryAddNormalHire(sparse, {kind="normal", account="Other"}, 4, 40)
+assert(otherSlot == 2, "another character stays independent of a full one")
+assert(C.NormalHireCountForCharacter(sparse, "Shir") == 4 and C.NormalHireCountForCharacter(sparse, "Other") == 2)
+-- Historical over-limit plans are reported faithfully and never trimmed.
+local historic = {}
+for slot = 30, 40 do historic[slot] = {kind="normal", account=(math.mod(slot, 2) == 0) and "Shir" or "shir"} end
+assert(C.NormalHireCountForCharacter(historic, "Shir") == 11)
+local historicSlot, historicReason = C.TryAddNormalHire(historic, {kind="normal", account="Shir"}, 4, 40)
+assert(historicSlot == nil and historicReason == "character-limit")
+local historicKept = 0
+for slot = 1, 40 do if historic[slot] then historicKept = historicKept + 1 end end
+assert(historicKept == 11 and C.NormalHireCountForCharacter(historic, "Shir") == 11, "over-limit plan was trimmed")
+
+-- Raw sparse seam, independent of any padding (EnsureDB may pad the UI board): the core counter
+-- must see high slots even when table.getn cannot, and must not pad or mutate the board.
+local highOnly = {}
+highOnly[40] = {kind="normal", account="Shir"}
+assert(C.NormalHireCountForCharacter(highOnly, "Shir") == 1, "hire only in slot 40 was not counted")
+local highRun = {}
+for slot = 37, 40 do highRun[slot] = {kind="normal", account=(math.mod(slot, 2) == 0) and "SHIR" or " shir "} end
+assert(C.NormalHireCountForCharacter(highRun, "Shir") == 4, "contiguous high-slot run was not counted")
+local holeBoard = {}
+holeBoard[1] = {kind="normal", account="Shir"}
+holeBoard[40] = {kind="normal", account="Shir"}
+assert(C.NormalHireCountForCharacter(holeBoard, "Shir") == 2, "hire after a border hole was not counted")
+local holeSlot, holeReason = C.TryAddNormalHire(highRun, {kind="normal", account="Shir"}, 4, 40)
+assert(holeSlot == nil and holeReason == "character-limit", "raw high-slot board at the limit must reject")
+local rawCount = 0
+for slot = 1, 40 do if highRun[slot] then rawCount = rawCount + 1 end end
+assert(rawCount == 4 and highRun[1] == nil, "core must not pad or write into a rejected raw board")
+assert(C.NormalHireCountForCharacter(sparse, "Shir") == 4 and C.NormalHireCountForCharacter(sparse, "Other") == 2)
+
+-- Sidebar model contract: title/raids/height unchanged; count is an additive, caller-supplied field.
+local countRow = C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, 3, "")
+assert(countRow.title == "Alpha - T3R" and countRow.raids == "" and countRow.height == 20, "count changed the title/raids/height contract")
+assert(countRow.count == 3 and countRow.countText == "3/4", "local sidebar row lost its hire count")
+assert(C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, 0, "").countText == "0/4", "zero hires must still show 0/4")
+-- A generic model with no caller count carries none, local or linked.
+local noCount = C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, nil, "")
+assert(noCount.count == nil and noCount.countText == nil, "generic model without a caller count must not invent one")
+local linkedNoCount = C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, nil, "", {})
+assert(linkedNoCount.countText == nil and linkedNoCount.readOnly == true)
+-- A caller providing a count for a linked (read-only) row gets it displayed without losing read-only.
+local linkedCount = C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, 2, "MC", {})
+assert(linkedCount.countText == "2/4" and linkedCount.readOnly == true and linkedCount.source ~= nil, "linked row must show caller count and stay read-only")
+assert(linkedCount.title == "Alpha - T3R" and linkedCount.raids == "MC" and linkedCount.height == 34)
+assert(C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, 0, "", {}).countText == "0/4", "linked zero count must show 0/4")
+-- Historic over-limit counts are reported faithfully.
+assert(C.CharacterLicenseRow("Alpha", {raidLicense="t3r"}, 11, "").countText == "11/4", "over-limit count must not be clamped")
+end)() end
 
 local warningDB = {}
 assert(C.CaptureWarningKey("Mageowner", "Microbot") == "microbot:mageowner")
@@ -842,7 +917,7 @@ do
         return {name=name, id="123", readyAt=now+100}
     end
     local all = {saved("Naxxramas"), saved("Ahn'Qiraj Temple"), saved("Blackwing Lair"), saved("Molten Core")}
-    assert(labels(snapshot(all, true)) == "MC BWL AQ40 NAX", "exact four labels in stable order")
+    assert(labels(snapshot(all, true)) == "MC BWL AQ40 NAXX", "exact four labels in stable order")
     for _, alias in ipairs({"Temple of Ahn'Qiraj", "Ahn'Qiraj", "AQ40", "  aHN'qIRAJ tEMPLE  "}) do
         assert(labels(snapshot({saved(alias), saved("Ahn'Qiraj Temple")}, true)) == "AQ40", "AQ40 aliases deduplicate")
     end
@@ -880,7 +955,7 @@ do
     db.cooldownsByCharacter["Realm"..sep.."Beta"] = {raidInfo={known=true,instances={saved("Blackwing Lair")}}}
     db.cooldownsByCharacter["Other"..sep.."Alpha"] = {raidInfo={known=true,instances={saved("Naxxramas")}}}
     assert(C.GetConfirmedSavedRaidLabels(db,"Realm","Beta",now) == "BWL")
-    assert(C.GetConfirmedSavedRaidLabels(db,"Other","Alpha",now) == "NAX")
+    assert(C.GetConfirmedSavedRaidLabels(db,"Other","Alpha",now) == "NAXX")
     assert(C.GetConfirmedSavedRaidLabels(db,"Absent","Alpha",now) == "")
     assert(C.GetConfirmedSavedRaidLabels(db,"Realm","Absent",now) == "")
     for _, invalid in ipairs({false, 1, "", "   "}) do

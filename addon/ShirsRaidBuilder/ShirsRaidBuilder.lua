@@ -67,7 +67,7 @@ local CLASS_COLORS = {
     rogue={1.00,0.96,0.41}, priest={1.00,1.00,1.00}, shaman={0.00,0.44,0.87},
     mage={0.41,0.80,0.94}, warlock={0.58,0.51,0.79}, druid={1.00,0.49,0.04},
 }
-local ROLE_SHORT = { tank="Tank", healer="Heal", mdps="Melee", rdps="Range" }
+local ROLE_SHORT = { tank="Tank", healer="Heal", mdps="MDPS", rdps="RDPS" }
 local GENDER_LABELS = { male="Male", female="Female" }
 local CLASSES = { "warrior", "mage", "warlock", "priest", "druid", "paladin", "shaman", "hunter", "rogue" }
 local SPECS = {
@@ -126,6 +126,13 @@ local executeFrames = 0
 local executeWaitStarted = 0
 local HIRE_DELAY_MIN = 7.5
 local HIRE_DELAY_MAX = 8.5
+-- A hire may follow a hire once the last hired companion has joined the group (the server
+-- has finished that hire) and this many seconds more. With no join, and before any other
+-- command or the end of a queue, the 7.5-8.5 s settle time still applies.
+C.HIRE_JOIN_MARGIN = 1.0
+-- A legacy companion can take longer to arrive than the settle time. Its deny list waits for
+-- it to be in the group, at most this many seconds, then goes anyway.
+C.LEGACY_JOIN_WAIT = 20
 local NOD_TIMEOUT_SECONDS = 3.0
 local WHISPER_GAP_SECONDS = 0.7
 local executeHireReadyAt = 0
@@ -311,17 +318,10 @@ end
 
 -- One five-row viewport plus a thumb that only appears at five or more items.
 -- Hung on C. so this file stays under Lua 5.0's 200-local cap.
-function C.EnsureDenyListScroll(host, spec)
-    if host.listScroll then return host.listScroll end
-    local viewport = CreateFrame("Frame", nil, host)
-    viewport:SetWidth(spec.width)
-    viewport:SetHeight(spec.rowHeight * C.DENY_LIST_VISIBLE_ROWS)
-    viewport:SetPoint("TOPLEFT", host, "TOPLEFT", spec.x, spec.y)
-    viewport:EnableMouse(true)
-    viewport:EnableMouseWheel(true)
+function C.CreateScrollTrack(host, viewport)
     local track = CreateFrame("Button", nil, host)
     track:SetWidth(12)
-    track:SetHeight(spec.rowHeight * C.DENY_LIST_VISIBLE_ROWS)
+    track:SetHeight(viewport:GetHeight())
     track:SetPoint("TOPLEFT", viewport, "TOPRIGHT", 4, 0)
     track:SetBackdrop(DROP_BG)
     track:SetBackdropColor(0.04, 0.06, 0.10, 1.0)
@@ -335,6 +335,19 @@ function C.EnsureDenyListScroll(host, spec)
     thumb:SetBackdropColor(0.45, 0.58, 0.78, 1.0)
     thumb:SetBackdropBorderColor(0.80, 0.88, 1.0, 1.0)
     thumb:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+    track.thumb=thumb
+    return track,thumb
+end
+
+function C.EnsureDenyListScroll(host, spec)
+    if host.listScroll then return host.listScroll end
+    local viewport = CreateFrame("Frame", nil, host)
+    viewport:SetWidth(spec.width)
+    viewport:SetHeight(spec.rowHeight * C.DENY_LIST_VISIBLE_ROWS)
+    viewport:SetPoint("TOPLEFT", host, "TOPLEFT", spec.x, spec.y)
+    viewport:EnableMouse(true)
+    viewport:EnableMouseWheel(true)
+    local track,thumb=C.CreateScrollTrack(host,viewport)
     local state = { offset = 0, items = {}, rows = {}, viewport = viewport, track = track, thumb = thumb, dragging = false }
     local function Paint()
         local items = state.items or {}
@@ -425,6 +438,7 @@ local choiceOwner = nil
 
 local function CloseChoiceMenu()
     if choiceMenu then choiceMenu:Hide() end
+    if C.characterChoices then C.characterChoices:Hide() end
     choiceOwner = nil
 end
 C.CloseChoiceMenu = CloseChoiceMenu
@@ -466,6 +480,7 @@ local function SelectButton(parent, options, current, width, x, y, onChange)
             CloseChoiceMenu()
             return
         end
+        if button.scrollCharacters then C.OpenCharacterChoices(button,onChange); return end
         if not choiceMenu then
             choiceMenu = CreateFrame("Frame", "ShirsRaidBuilderChoiceMenu", UIParent)
         end
@@ -503,6 +518,39 @@ local function SelectButton(parent, options, current, width, x, y, onChange)
     return button
 end
 
+function C.OpenCharacterChoices(button,onChange)
+    CloseChoiceMenu()
+    if not C.characterChoices then
+        C.characterChoices=CreateFrame("Frame","ShirsRaidBuilderCharacterChoices",UIParent)
+        RegisterEscapeFrame(C.characterChoices)
+    end
+    local menu=C.characterChoices
+    local count=table.getn(button.options)
+    if count==0 then return end
+    StyleMenuFrame(menu)
+    menu:SetWidth(math.max(174,button:GetWidth())); menu:SetHeight(math.min(count,5)*20+8)
+    menu:ClearAllPoints(); menu:SetPoint("TOPLEFT",button,"BOTTOMLEFT",0,-2)
+    menu.owner=button; menu.changed=onChange
+    local scroll=C.EnsureDenyListScroll(menu,{
+        width=150,rowHeight=20,x=4,y=-4,minScrollCount=6,
+        createRow=function(parent)
+            local row=CreateFrame("Button",nil,parent); row:SetWidth(150); row:SetHeight(18)
+            row.label=row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall")
+            row.label:SetPoint("LEFT",row,"LEFT",4,0); row.label:SetWidth(142); row.label:SetJustifyH("LEFT")
+            row:SetScript("OnClick",function()
+                local name=row.value; local owner=menu.owner; local changed=menu.changed
+                menu:Hide(); owner.label:SetText(name)
+                if changed then changed(name) end
+            end)
+            return row
+        end,
+        bindRow=function(row,name) row.value=name; row.label:SetText(name) end,
+    })
+    scroll.viewport:SetHeight(math.min(count,5)*20)
+    scroll.thumb:EnableMouseWheel(true); scroll.thumb:SetScript("OnMouseWheel",scroll.track:GetScript("OnMouseWheel"))
+    scroll.items=button.options; scroll.offset=0; scroll.dragging=false; scroll.Paint(); menu:Show()
+end
+
 local function RoleOptions(class)
     local result = {}
     local source = CLASS_ROLES[class] or ROLES
@@ -528,10 +576,10 @@ local function ClassesForRole(role, faction)
     return result
 end
 
+-- The tiers a hire-from character holds, from this account's list or a linked account's
+-- snapshot; only the base tier while its licences are unknown.
 local function TiersForCharacter(name)
-    local record = type(DB.inviteCharacters) == "table" and DB.inviteCharacters[C.Trim(name)]
-    if record then return C.BuildLicenseOptions(record.dungeonLicense, record.raidLicense) end
-    return TIERS
+    return C.HireFromTiers(DB, UnitName("player"), GetRealmName(), name) or {"t0d"}
 end
 
 local function SpecsForClassRole(class, role)
@@ -603,19 +651,20 @@ local function HarvestKnownFactions()
     end
 end
 
+-- The live game and the server's lists (this account's, or a linked account's synced rows)
+-- come first; a remembered faction may be a guess from an old hire's race.
 local function FactionForCharacter(name)
     local character = C.Trim(name)
     if character == "" then return nil end
-    HarvestKnownFactions()
-    if type(DB.characterFactions) == "table" and DB.characterFactions[character] then return DB.characterFactions[character] end
-    if type(DB.inviteCharacters) == "table" and DB.inviteCharacters[character] and DB.inviteCharacters[character].faction then
-        return DB.inviteCharacters[character].faction
-    end
     if type(UnitName) == "function" and type(UnitFactionGroup) == "function" and UnitName("player") == character then
         local live = UnitFactionGroup("player")
         RememberFaction(character, live)
         return live
     end
+    local synced = C.HireFromFaction(DB, UnitName("player"), GetRealmName(), character)
+    if synced then return synced end
+    HarvestKnownFactions()
+    if type(DB.characterFactions) == "table" and DB.characterFactions[character] then return DB.characterFactions[character] end
     local preset = DB.presets and DB.presets[DB.currentPreset]
     if preset and type(preset.entries) == "table" then
         for i = 1, table.getn(preset.entries) do
@@ -735,7 +784,51 @@ local CloseContext
 
 local function AddRowActionButtons(row, index)
     if C.IsPlayerEntry(EnsureDB().entries[index]) then return end
-    MakeButton(row, "X", 16, 82, -3, function() RemoveEntry(index) end)
+    -- Compact, beside the name line, so the card's bottom right can show the hire's tier.
+    MakeButton(row, "X", 16, 82, -3, function() RemoveEntry(index) end):SetHeight(12)
+end
+
+-- A normal hire's licence tier as the sidebar writes it (T5R): raid tiers in the header
+-- gold, dungeon tiers in the panel's light blue. Returns the label ("" when none).
+function C.PaintTier(text, entry)
+    local label = entry and entry.kind == "normal" and C.TierLabel(entry.tier) or ""
+    text:SetText(label)
+    if string.find(label, "R$") then text:SetTextColor(1.0, 0.84, 0.28) else text:SetTextColor(0.75, 0.88, 1.0) end
+    return label
+end
+
+-- The tier sits bottom right under the remove button, a size below the card text. Its box
+-- is sized to its text by FitCardLine.
+function C.TierText(parent)
+    local text = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    text:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -3, -15); text:SetWidth(24); text:SetHeight(10); text:SetJustifyH("RIGHT")
+    if text.GetFont then
+        local file, _, flags = text:GetFont()
+        if file and flags then text:SetFont(file, 9, flags) elseif file then text:SetFont(file, 9) end
+    end
+    return text
+end
+
+-- A card's second line: class and role at the left, and the painted tier (or nil) whole at
+-- the right. A measured width runs past the drawn letters, so the class line may reach 2
+-- units into the tier's measured width and the drawn text still keeps clear (in the game
+-- font a strict fit cut the "r" from "Warrior MDPS" beside T0D with 7 units free). Only when
+-- the line still does not fit does the class name lose letters from its end, never the role.
+function C.FitCardLine(line, tier, class, role)
+    local room = 94
+    if tier then
+        local width = tier:GetStringWidth() or 0
+        if width < 8 then width = 20 end -- no font metrics yet: room for three letters
+        tier:SetWidth(width + 1)
+        room = 96 - width
+    end
+    line:SetWidth(room + 1)
+    local cut = class
+    line:SetText(cut .. " " .. role)
+    while string.len(cut) > 3 and (line:GetStringWidth() or 0) > room do
+        cut = string.sub(cut, 1, string.len(cut) - 1)
+        line:SetText(cut .. " " .. role)
+    end
 end
 
 local function PaintEntryRow(row, entry)
@@ -772,10 +865,13 @@ local function RenderEntry(index, entry, y, spawnNumber, x)
     line1:SetText(tostring(spawnNumber) .. " " .. name)
     line1:SetTextColor(0.95, 0.96, 1.0)
     local line2 = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    line2:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -15); line2:SetWidth(78); line2:SetHeight(10); line2:SetJustifyH("LEFT")
+    line2:SetPoint("TOPLEFT", row, "TOPLEFT", 3, -15); line2:SetHeight(10); line2:SetJustifyH("LEFT")
     if line2.SetNonSpaceWrap then line2:SetNonSpaceWrap(false) end
-    line2:SetText((CLASS_LABELS[classKey] or classKey) .. " " .. (ROLE_SHORT[entry.role] or entry.role or ""))
     line2:SetTextColor(color[1], color[2], color[3])
+    if entry.kind == "normal" and C.TierLabel(entry.tier) ~= "" then
+        row.tierText = C.TierText(row); C.PaintTier(row.tierText, entry)
+    end
+    C.FitCardLine(line2, row.tierText, CLASS_LABELS[classKey] or classKey, ROLE_SHORT[entry.role] or entry.role or "")
     row:SetScript("OnMouseUp", function()
         if arg1 == "RightButton" then
             OpenContextMenu(index, row)
@@ -793,7 +889,7 @@ local function RenderEntry(index, entry, y, spawnNumber, x)
             GameTooltip:AddLine("Drag to choose your group. Right-click to set role.", 0.8,0.8,0.8)
         end
         if entry.kind == "normal" then
-            GameTooltip:AddLine((entry.tier or "") .. "  " .. (SPEC_LABELS[entry.spec] or entry.spec or "") .. "  " .. (RACE_LABELS[entry.race] or "") .. "  " .. (GENDER_LABELS[entry.gender] or ""), 0.8,0.8,0.8)
+            GameTooltip:AddLine(C.TierLabel(entry.tier) .. "  " .. (SPEC_LABELS[entry.spec] or entry.spec or "") .. "  " .. (RACE_LABELS[entry.race] or "") .. "  " .. (GENDER_LABELS[entry.gender] or ""), 0.8,0.8,0.8)
             GameTooltip:AddLine("Right-click: change hire settings", 0.8,0.8,0.8)
         end
         if entry.kind == "legacy" then
@@ -831,14 +927,16 @@ local function RenderEntry(index, entry, y, spawnNumber, x)
             if dragGhost.line1.SetNonSpaceWrap then dragGhost.line1:SetNonSpaceWrap(false) end
             dragGhost.line2 = dragGhost:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             dragGhost.line2:SetPoint("TOPLEFT", dragGhost, "TOPLEFT", 3, -15)
-            dragGhost.line2:SetWidth(92); dragGhost.line2:SetHeight(10); dragGhost.line2:SetJustifyH("LEFT")
+            dragGhost.line2:SetHeight(10); dragGhost.line2:SetJustifyH("LEFT")
             if dragGhost.line2.SetNonSpaceWrap then dragGhost.line2:SetNonSpaceWrap(false) end
+            dragGhost.tier = C.TierText(dragGhost)
         end
         PaintEntryRow(dragGhost, entry)
         dragGhost.line1:SetText(tostring(index) .. " " .. name)
         dragGhost.line1:SetTextColor(0.95, 0.96, 1.0)
-        dragGhost.line2:SetText((CLASS_LABELS[classKey] or classKey) .. " " .. (ROLE_SHORT[entry.role] or entry.role or ""))
         dragGhost.line2:SetTextColor(color[1], color[2], color[3])
+        C.FitCardLine(dragGhost.line2, C.PaintTier(dragGhost.tier, entry) ~= "" and dragGhost.tier or nil,
+            CLASS_LABELS[classKey] or classKey, ROLE_SHORT[entry.role] or entry.role or "")
         local function PlaceGhost()
             local s = UIParent:GetEffectiveScale()
             if not s or s == 0 then s = 1 end
@@ -946,6 +1044,7 @@ function RefreshComposition()
         mainFrame.roleText:SetText("Tank "..roles.tank.."   Healer "..roles.healer.."   Melee "..roles.mdps.."   Range "..roles.rdps)
     end
     RefreshAccountPanel()
+    C.RefreshNormalCount(addNormalFrame)
     if addLegacyFrame and addLegacyFrame:IsShown() and C.RefreshLegacyNameSuggestions then
         C.RefreshLegacyNameSuggestions(addLegacyFrame.nameInput)
     end
@@ -998,6 +1097,10 @@ local function DiscoverCharacterNames()
             if C.CharacterCanHire(record) then table.insert(licensed, name) end
         end
         if table.getn(licensed) > 0 then
+            local seen={}; for _,name in ipairs(licensed) do seen[string.lower(name)]=true end
+            for _,name in ipairs(C.RememberedHireNames(DB,UnitName("player"),GetRealmName())) do
+                if not seen[string.lower(name)] then table.insert(licensed,name); seen[string.lower(name)]=true end
+            end
             table.sort(licensed)
             return licensed
         end
@@ -1033,6 +1136,7 @@ local function DiscoverCharacterNames()
             end
         end
     end
+    for _,name in ipairs(C.RememberedHireNames(DB,UnitName("player"),GetRealmName())) do found[name]=true end
     local result = {}
     for name in pairs(found) do table.insert(result, name) end
     table.sort(result)
@@ -1076,6 +1180,9 @@ local function HandleInviteListMessage()
     local payload = C.ExtractInviteListPayload(raw)
     if not payload then return end
     local records = C.ParseInviteList(payload)
+    if C.LicenseObserve then
+        C.LicenseObserve(C.LicenseReadPayload(C.ExtractInviteListPayload(tostring(arg1 or "")) or C.ExtractInviteListPayload(tostring(arg2 or ""))))
+    end
     StoreInviteCharacters(records)
     if addLegacyFrame and addLegacyFrame:IsShown() then C.RefreshLegacyCharacter(addLegacyFrame) end
     if mainFrame and mainFrame:IsShown() then RefreshAccountPanel() end
@@ -1102,72 +1209,134 @@ local function EnsureInviteListener()
     inviteFrame:SetScript("OnEvent", HandleInviteListMessage)
 end
 
+function C.AccountScroll(value)
+    if not mainFrame or not mainFrame.accountScroll then return end
+    local maximum=math.max(0,mainFrame.accountContent:GetHeight()-mainFrame.accountScroll:GetHeight())
+    value=math.max(0,math.min(maximum,value or 0))
+    mainFrame.accountScroll:SetVerticalScroll(value)
+    if mainFrame.accountBar then
+        local track=mainFrame.accountBar
+        track.maximum=maximum
+        local height=track:GetHeight()
+        local thumbHeight=math.min(height,math.max(16,height*mainFrame.accountScroll:GetHeight()/mainFrame.accountContent:GetHeight()))
+        track.thumb:SetHeight(thumbHeight)
+        track.thumb:ClearAllPoints()
+        track.thumb:SetPoint("TOPLEFT",track,"TOPLEFT",1,maximum>0 and -(height-thumbHeight)*value/maximum or 0)
+        if maximum>0 and DB.uiMode~="sort" then track:Show() else track:Hide(); track.dragging=false end
+    end
+end
+
+function C.AccountWheel()
+    C.AccountScroll(mainFrame.accountScroll:GetVerticalScroll()-(arg1 or 0)*60)
+end
+
+function C.CreateAccountScrollTrack()
+    local track,thumb=C.CreateScrollTrack(mainFrame,mainFrame.accountScroll)
+    mainFrame.accountBar=track
+    track:SetScript("OnMouseWheel",C.AccountWheel)
+    thumb:EnableMouseWheel(true); thumb:SetScript("OnMouseWheel",C.AccountWheel)
+    track:SetScript("OnClick",function()
+        local _,y=GetCursorPosition()
+        local direction=y/track:GetEffectiveScale()>(thumb:GetTop() or 0) and -1 or 1
+        C.AccountScroll(mainFrame.accountScroll:GetVerticalScroll()+direction*mainFrame.accountScroll:GetHeight())
+    end)
+    thumb:SetScript("OnMouseDown",function()
+        if arg1~="LeftButton" then return end
+        local _,y=GetCursorPosition()
+        track.dragging=true; track.dragY=y/track:GetEffectiveScale()
+        track.dragValue=mainFrame.accountScroll:GetVerticalScroll()
+    end)
+    local function StopDrag() track.dragging=false end
+    thumb:SetScript("OnMouseUp",StopDrag); track:SetScript("OnMouseUp",StopDrag)
+    track:SetScript("OnHide",StopDrag); mainFrame.accountScroll:SetScript("OnHide",StopDrag)
+    thumb:SetScript("OnUpdate",function()
+        if not track.dragging then return end
+        if type(IsMouseButtonDown)=="function" and not IsMouseButtonDown("LeftButton") then StopDrag(); return end
+        local travel=track:GetHeight()-thumb:GetHeight()
+        if travel<=0 or not track.maximum or track.maximum<=0 then StopDrag(); return end
+        local _,y=GetCursorPosition()
+        C.AccountScroll(track.dragValue+(track.dragY-y/track:GetEffectiveScale())*track.maximum/travel)
+    end)
+end
+
+function C.AccountRow(y,height)
+    mainFrame.accountPool=mainFrame.accountPool or {}
+    local index=table.getn(mainFrame.accountRows)+1
+    local row=mainFrame.accountPool[index]
+    if not row then
+        row=CreateFrame("Button",nil,mainFrame.accountContent)
+        row.lines={}
+        for i=1,2 do
+            local text=row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall")
+            text:SetPoint("TOPLEFT",row,"TOPLEFT",4,-3-(i-1)*14)
+            text:SetWidth(153); text:SetHeight(14); text:SetJustifyH("LEFT")
+            row.lines[i]=text
+        end
+        row.countText=row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall")
+        row.countText:SetPoint("TOPRIGHT",row,"TOPRIGHT",-4,-3)
+        row.countText:SetHeight(14); row.countText:SetJustifyH("RIGHT"); row.countText:SetTextColor(1,0.85,0.25)
+        row:EnableMouseWheel(true); row:SetScript("OnMouseWheel",C.AccountWheel)
+        mainFrame.accountPool[index]=row
+    end
+    row.model=nil
+    row:ClearAllPoints(); row:SetPoint("TOPLEFT",mainFrame.accountContent,"TOPLEFT",2,y)
+    row:SetWidth(161); row:SetHeight(height); row:SetScript("OnClick",nil); row:SetScript("OnEnter",nil); row:SetScript("OnLeave",nil)
+    for _,text in ipairs(row.lines) do text:SetText(""); text:Hide() end
+    row.lines[1]:SetWidth(153); row.countText:SetText(""); row.countText:Hide()
+    row:Show(); table.insert(mainFrame.accountRows,row)
+    return row
+end
+
+function C.DrawCharacterLicenseRow(model,y)
+    local row=C.AccountRow(y,model.height)
+    row.model=model
+    local values={model.title,model.raids}
+    for i,text in ipairs(row.lines) do
+        text:SetText(values[i] or "")
+        if i==2 then text:SetTextColor(1,0.35,0.1) else text:SetTextColor(0.75,0.88,1.0) end
+        if values[i] and values[i]~="" then text:Show() end
+    end
+    if model.countText then
+        row.countText:SetText(model.countText); row.countText:Show()
+        row.lines[1]:SetWidth(153-row.countText:GetStringWidth()-6)
+    end
+    return row
+end
+
 function RefreshAccountPanel()
     if not mainFrame or not mainFrame.accountContent then return end
     if DB.uiMode == "sort" then
         mainFrame.accountContent:Hide()
+        if mainFrame.accountBar then mainFrame.accountBar:Hide() end
         return
     end
     mainFrame.accountContent:Show()
-    for i = 1, table.getn(mainFrame.accountRows or {}) do mainFrame.accountRows[i]:Hide(); mainFrame.accountRows[i]:SetParent(nil) end
+    for i = 1, table.getn(mainFrame.accountRows or {}) do mainFrame.accountRows[i]:Hide() end
     mainFrame.accountRows = {}
-    local counts = {}
     local preset = EnsureDB()
-    for i = 1, table.getn(preset.entries) do
-        local name = C.HireCountName(preset.entries[i])
-        if name then counts[name] = (counts[name] or 0) + 1 end
-    end
-    local names = DiscoverCharacterNames()
-    local reals = {}
-    if type(DB.inviteCharacters) == "table" then
-        local n
-        for n in pairs(DB.inviteCharacters) do table.insert(reals, n) end
-    end
-    for i = 1, table.getn(names) do table.insert(reals, names[i]) end
-    for name in pairs(counts) do
-        if not C.IsLegacyHireStub(name, reals) then
-            local exists = false
-            for i = 1, table.getn(names) do if names[i] == name then exists = true end end
-            if not exists then table.insert(names, name) end
-        end
-    end
-    C.SortInviteNamesByRaidLicense(names, DB.inviteCharacters)
+    local counts = {}
+    local names,records = {},{}
+    for _,record in ipairs(C.AccountReadLocal()) do records[record.name]=record; table.insert(names,record.name) end
+    C.SortInviteNamesByRaidLicense(names, records)
     local realm = type(GetRealmName) == "function" and GetRealmName()
     local now = type(time) == "function" and time()
     local y = -8
     for i = 1, table.getn(names) do
         local name = names[i]
-        local record = type(DB.inviteCharacters) == "table" and DB.inviteCharacters[name]
-        local currentTier = C.CurrentLicenseTier(record)
-        local savedRaids = C.GetConfirmedSavedRaidLabels(ShirsLazyTrixDB, realm, name, now)
-        local rowHeight = (currentTier and 34 or 22) + (savedRaids ~= "" and 14 or 0)
-        local row = CreateFrame("Button", nil, mainFrame.accountContent)
-        row:SetWidth(165); row:SetHeight(rowHeight); row:SetPoint("TOPLEFT", mainFrame.accountContent, "TOPLEFT", 2, y)
-        local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        if currentTier or savedRaids ~= "" then text:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -3) else text:SetPoint("LEFT", row, "LEFT", 4, 0) end
-        text:SetText(name .. "  [" .. (counts[name] or 0) .. "]")
-        text:SetTextColor(0.75, 0.88, 1.0)
-        if currentTier then
-            local tierText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            tierText:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -17)
-            tierText:SetText(currentTier)
-            tierText:SetTextColor(0.62, 0.72, 0.82)
-        end
-        if savedRaids ~= "" then
-            local raidText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            raidText:SetPoint("TOPLEFT", row, "TOPLEFT", 4, currentTier and -31 or -17)
-            raidText:SetWidth(157); raidText:SetJustifyH("LEFT")
-            raidText:SetText(savedRaids)
-            raidText:SetTextColor(0.85, 0.72, 0.42)
-        end
+        local record = records[name]
+        local savedRaids = C.AccountRaidLabels(record,now)
+        counts[name]=C.NormalHireCountForCharacter(preset.entries,name)
+        local model=C.CharacterLicenseRow(name,record,counts[name],savedRaids)
+        local row=C.DrawCharacterLicenseRow(model,y)
         local captured = name
         row:SetScript("OnClick", function()
             SetStatus(captured .. " has " .. (counts[captured] or 0) .. " hire(s) in this preset.")
         end)
-        table.insert(mainFrame.accountRows, row)
-        y = y - rowHeight - 2
+        y = y - model.height - 2
     end
+    if C.LicenseSidebar then y=C.LicenseSidebar(y) end
     mainFrame.accountContent:SetHeight(math.max(100, -y + 10))
+    C.AccountScroll(mainFrame.accountScroll:GetVerticalScroll())
 end
 
 CloseContext = function()
@@ -1177,6 +1346,11 @@ CloseContext = function()
 end
 
 local function HideFloatingPanels()
+    if C.planShareFrame then C.planShareFrame:Hide() end
+    if C.planReceiveFrame then C.planReceiveFrame:Hide() end
+    if C.licenseView then C.licenseView:Hide() end
+    if C.peerPanel then C.peerPanel:Hide() end
+    if C.PeerBuilderClosed then C.PeerBuilderClosed("Builder closed; peer will time out") end
     CloseContext()
     CloseChoiceMenu()
     if abilityMenu then abilityMenu:Hide() end
@@ -1195,13 +1369,47 @@ local function HideFloatingPanels()
     if GameTooltip then GameTooltip:Hide() end
 end
 
+-- Move a normal hire to another hire-from character. Refused when that character already
+-- has four hires on the board, or its faction cannot have the class. A tier it lacks drops
+-- to its highest (T0 while its licences are unknown); the base tier and tiers it holds
+-- stay. A race of the other faction becomes the first of its own for the class.
+function C.MoveHireFrom(index, account)
+    local entries = EnsureDB().entries
+    local entry = entries[index]
+    if not entry or entry.kind ~= "normal" or not C.IsSafeCharacterName(account) then return end
+    if C.NormalHireCountForCharacter(entries, account) >= 4 then
+        SetStatus(account .. " already has the maximum four companions in this hiring plan.")
+        return
+    end
+    local faction = FactionForCharacter(account)
+    if faction and not C.ClassAllowedForFaction(entry.class, faction) then
+        SetStatus(account .. " is " .. faction .. " and cannot hire a " .. (CLASS_LABELS[entry.class] or tostring(entry.class)) .. ".")
+        return
+    end
+    local before = C.TierLabel(entry.tier)
+    local known = C.HireFromTiers(DB, UnitName("player"), GetRealmName(), account)
+    entry.account = account
+    entry.tier = C.FitTier(entry.tier, TiersForCharacter(account))
+    if faction and RACE_FACTIONS[entry.race] and RACE_FACTIONS[entry.race] ~= faction then
+        local races = RacesForClassAndFaction(entry.class, faction)
+        if races[1] then entry.race = races[1] end
+    end
+    RefreshComposition()
+    local after = C.TierLabel(entry.tier)
+    if after ~= before and not known then SetStatus("Spawn " .. index .. " now hires from " .. account .. " at " .. after .. " (was " .. before .. "): its licences are unknown on this account.")
+    elseif after ~= before then SetStatus("Spawn " .. index .. " now hires from " .. account .. " at " .. after .. ", its highest tier (was " .. before .. ").")
+    else SetStatus("Spawn " .. index .. " now hires from " .. account .. ".") end
+end
+
 OpenContextMenu = function(index, anchor, page)
     local entry = EnsureDB().entries[index]
     if not C.IsFilledEntry(entry) then return end
+    -- A second right-click closes the menu; Back asks for the "main" page instead.
     if not page and contextIndex == index and contextFrame and contextFrame:IsShown() then
         CloseContext()
         return
     end
+    if page == "main" then page = nil end
     contextIndex = index
     if not contextShield then
         contextShield = CreateFrame("Button", "ShirsRaidBuilderContextShield", UIParent)
@@ -1254,7 +1462,8 @@ OpenContextMenu = function(index, anchor, page)
             AddContext("Individual commands", function() CloseContext(); OpenDenyEditor(index) end)
         end
         if entry.kind == "normal" then
-            AddContext("Tier: " .. (entry.tier or "t2r"), function() OpenContextMenu(index, anchor, "tier") end)
+            AddContext("Hire from: " .. (entry.account or "?"), function() OpenContextMenu(index, anchor, "account") end)
+            AddContext("Tier: " .. C.TierLabel(entry.tier or "t2r"), function() OpenContextMenu(index, anchor, "tier") end)
             AddContext("Gender: " .. (GENDER_LABELS[entry.gender] or entry.gender or "Male"), function() OpenContextMenu(index, anchor, "gender") end)
         end
         AddContext("Role: " .. (ROLE_LABELS[entry.role] or entry.role or "?"), function() OpenContextMenu(index, anchor, "role") end)
@@ -1268,39 +1477,47 @@ OpenContextMenu = function(index, anchor, page)
         AddContext("Close", CloseContext)
         end
     elseif page == "tier" then
-        AddContext("Back", function() OpenContextMenu(index, anchor) end)
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
         local tiers = TiersForCharacter(entry.account)
         for i = 1, table.getn(tiers) do
             local tier = tiers[i]
             AddContext(tier, function() ApplyField("tier", tier) end)
         end
+    elseif page == "account" then
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
+        for _, name in ipairs(DiscoverCharacterNames()) do
+            local who = name
+            if who ~= "(none)" and string.lower(who) ~= string.lower(entry.account or "") then
+                AddContext(who, function() CloseContext(); C.MoveHireFrom(index, who) end)
+            end
+        end
     elseif page == "gender" then
-        AddContext("Back", function() OpenContextMenu(index, anchor) end)
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
         AddContext("Male", function() ApplyField("gender", "male") end)
         AddContext("Female", function() ApplyField("gender", "female") end)
     elseif page == "role" then
-        AddContext("Back", function() OpenContextMenu(index, anchor) end)
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
         local roles = CLASS_ROLES[entry.class] or ROLES
         for i = 1, table.getn(roles) do
             local role = roles[i]
             AddContext(ROLE_LABELS[role] or role, function() ApplyField("role", role) end)
         end
     elseif page == "spec" then
-        AddContext("Back", function() OpenContextMenu(index, anchor) end)
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
         local specs = SpecsForClassRole(entry.class, entry.role)
         for i = 1, table.getn(specs) do
             local spec = specs[i]
             AddContext(SPEC_LABELS[spec] or spec, function() ApplyField("spec", spec) end)
         end
     elseif page == "race" then
-        AddContext("Back", function() OpenContextMenu(index, anchor) end)
-        local races = CLASS_RACES[entry.class] or RACES
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
+        local races = RacesForClassAndFaction(entry.class, FactionForCharacter(entry.account or ""))
         for i = 1, table.getn(races) do
             local race = races[i]
             AddContext(RACE_LABELS[race] or race, function() ApplyField("race", race) end)
         end
     elseif page == "pet" then
-        AddContext("Back", function() OpenContextMenu(index, anchor) end)
+        AddContext("Back", function() OpenContextMenu(index, anchor, "main") end)
         local pets = {"On","Off","Imp","Voidwalker","Succubus","Felhunter"}
         for i = 1, table.getn(pets) do
             local pet = pets[i]
@@ -1894,7 +2111,8 @@ local function RefreshLegacyNameSuggestions(input)
     legacyNameMenu:SetBackdropColor(0.02, 0.03, 0.06, 1.0)
     legacyNameMenu:SetBackdropBorderColor(0.55, 0.68, 0.88, 1.0)
     legacyNameMenu:SetFrameStrata(host.GetFrameStrata and host:GetFrameStrata() or "FULLSCREEN_DIALOG")
-    legacyNameMenu:SetFrameLevel((host.GetFrameLevel and host:GetFrameLevel() or 80) + 4)
+    -- Above the panel's raised dropdowns (+5), below its Add and Cancel buttons (+20).
+    legacyNameMenu:SetFrameLevel((host.GetFrameLevel and host:GetFrameLevel() or 80) + 10)
     legacyNameMenu:ClearAllPoints()
     legacyNameMenu:SetPoint("TOPLEFT", input, "BOTTOMLEFT", -4, -2)
     local count = table.getn(matches)
@@ -1943,8 +2161,16 @@ local function RefreshLegacyNameSuggestions(input)
 end
 C.RefreshLegacyNameSuggestions = RefreshLegacyNameSuggestions
 
+function C.RefreshNormalCount(frame)
+    if not frame or not frame.countText or not frame.characterButton then return end
+    local name = C.Trim(frame.characterButton.label:GetText())
+    if name == "" or name == "(none)" then frame.countText:SetText(""); return end
+    frame.countText:SetText(C.NormalHireCountForCharacter(EnsureDB().entries, name) .. "/4")
+end
+
 local function RefreshNormalHireOptions(frame)
     if not frame or not frame.roleButton or not frame.classButton then return end
+    C.RefreshNormalCount(frame)
     local role = RoleValue(frame.roleButton.label:GetText())
     local classes = ClassesForRole(role, frame.selectedFaction)
     frame.classButton.options = classes
@@ -2004,6 +2230,22 @@ function C.RequestLegacyCharacters(frame)
     end)
 end
 
+-- Add Normal's tier starts on the selected character's highest, when its licences are known.
+function C.TopTier(frame)
+    local tiers = C.HireFromTiers(DB, UnitName("player"), GetRealmName(), frame.characterButton.label:GetText())
+    if tiers and table.getn(tiers) > 0 then frame.tierButton.label:SetText(tiers[table.getn(tiers)]) end
+end
+
+-- The status line for a picked character: its faction, or what this account does not know
+-- about it yet and what the lists offer meanwhile. The second value is true when both are known.
+function C.CharacterNote(name, faction)
+    local tiers = C.HireFromTiers(DB, UnitName("player"), GetRealmName(), name)
+    if faction and tiers then return name .. " is " .. faction .. ".", true end
+    local missing = not faction and not tiers and "faction and licences" or not faction and "faction" or "licences"
+    local offer = not faction and not tiers and "every race and only T0 show" or not faction and "every race shows" or "only T0 shows"
+    return name .. ": " .. missing .. " unknown on this account, so " .. offer .. ". Use Refresh Synchronization.", false
+end
+
 local function AddEntryEditor(kind)
     -- A dropdown left open on another hire panel is mouse-enabled at TOOLTIP
     -- strata; if it survives, it swallows every click on this panel.
@@ -2024,12 +2266,21 @@ local function AddEntryEditor(kind)
             frame.characterButton=SelectButton(frame,{"(none)"},"(none)",128,18,-46,function(v)
                 frame.selectedFaction=FactionForCharacter(v)
                 RefreshNormalHireOptions(frame)
-                SetStatus(frame.selectedFaction and (v .. " is " .. frame.selectedFaction .. ".") or (v .. " faction is unknown; log that character once, or pick a race."))
+                C.TopTier(frame)
+                SetStatus((C.CharacterNote(v, frame.selectedFaction)))
             end)
+            frame.characterButton.scrollCharacters=true
+            frame.countText=frame:CreateFontString(nil,"OVERLAY","GameFontNormal"); frame.countText:SetPoint("TOPLEFT",frame,"TOPLEFT",100,-28); frame.countText:SetTextColor(1,0.85,0.25)
         else
             MakeCaption(frame, "Character name", 18, -30)
             frame.nameInput=MakeInput(frame,150,18,-46,"")
             frame.nameInput:SetMaxLetters(12)
+            -- Right-hand column: the name list opens below the name field and must not cover it.
+            MakeCaption(frame,"Remembered characters",294,-78)
+            frame.characterButton=SelectButton(frame,{"(none)"},"(none)",128,294,-94,function(v)
+                if v~="(none)" then frame.nameInput:SetText(v); HideLegacyNameSuggestions() end
+            end)
+            frame.characterButton.scrollCharacters=true
             frame.nameInput:SetScript("OnTextChanged", function() frame.legacyEditedName=nil; frame.legacyRoleEditedName=nil; C.RefreshLegacyCharacter(frame); RefreshLegacyNameSuggestions(frame.nameInput) end)
             frame.nameInput:SetScript("OnEditFocusGained", function() RefreshLegacyNameSuggestions(frame.nameInput) end)
             frame.nameInput:SetScript("OnEditFocusLost", function() end)
@@ -2105,6 +2356,12 @@ local function AddEntryEditor(kind)
         if not valid then frame.characterButton.label:SetText(savedNames[1]) end
         frame.selectedFaction=FactionForCharacter(frame.characterButton.label:GetText())
         RefreshNormalHireOptions(frame)
+        C.TopTier(frame)
+        local note, known = C.CharacterNote(frame.characterButton.label:GetText(), frame.selectedFaction)
+        if not known and C.IsSafeCharacterName(frame.characterButton.label:GetText()) then SetStatus(note) end
+    else
+        frame.characterButton.options=DiscoverCharacterNames()
+        if table.getn(frame.characterButton.options)==0 then frame.characterButton.options={"(none)"} end
     end
     frame:SetFrameStrata("FULLSCREEN_DIALOG")
     if frame.SetToplevel then frame:SetToplevel(true) end
@@ -2367,7 +2624,11 @@ local function HandleCompanionInfoMessage()
     C.latestCompanionList = companions
     C.latestCompanionInfoAt = GetTime and GetTime() or 0
     if (not executing) and (not C.sortWaiting) then return end
-    if executeGrinfoReady then return end
+    -- A list answering another addon while a hire settles can predate that hire's
+    -- companion. The queue asks for its own list once the hire has settled.
+    if executing and GetTime and (executeHireReadyAt or 0) > GetTime() then return end
+    if executeGrinfoReady and not C.grinfoRefresh then return end
+    C.grinfoRefresh = nil
     executeCompanionList = companions
     executeGrinfoReady = true
     Chat("Received " .. table.getn(executeCompanionList) .. " companion record(s) from the server.")
@@ -2398,8 +2659,19 @@ local function ExpandPendingGroupDenies()
         local me = UnitName("player")
         if me then present[me] = nil end
     end
-    local leftoverSet = C.LegacyNameSet(EnsureDB().entries)
-    local live = C.AppendLegacyGroupMembers(C.KeepPresentCompanions(executeCompanionList, present), EnsureDB().entries, present)
+    local plan=C.handRunPlan or EnsureDB()
+    local leftoverSet = C.LegacyNameSet(plan.entries)
+    local live = C.AppendLegacyGroupMembers(C.KeepPresentCompanions(executeCompanionList, present), plan.entries, present)
+    C.scopeAsks = nil; C.scopeCheckedAt = nil; C.scopeShort = nil; C.grinfoRefresh = nil
+    if C.handRunPlan then
+        -- Companions the run's earlier steps account for stay with those steps. A batch row
+        -- with no companion here (its hire failed, or it never came) loses only its own
+        -- group commands, and the chat names it; the run goes on.
+        local unclaimed=plan.allRows and executeCompanionList or C.HandUnclaimed(C.HandStore().active,executeCompanionList)
+        local missing
+        live,missing=C.HandScopeFound(plan.entries,C.KeepPresentCompanions(unclaimed,present),UnitName("player"),present,C.HandOwn())
+        for _,slot in ipairs(missing) do Chat(C.HandMissingNote(plan.entries[slot], slot)) end
+    end
     local denyPending = {}
     local setupPending = {}
     for i = 1, table.getn(pending) do
@@ -2428,6 +2700,39 @@ local function ExpandPendingGroupDenies()
     else
         Chat("Group commands will whisper companions first, then leftover overwrite last: " .. total .. " live command(s).")
     end
+end
+
+-- In a run, how many of the batch's own rows the current companion list cannot place yet
+-- (HandScopeFound), checked twice a second. While any is missing the name wait goes on,
+-- and the server is asked again, twice at most and 3 s apart: a list can answer before the
+-- last hire's companion registered.
+function C.HandScopeShort()
+    if not C.handRunPlan then return 0 end
+    local now = GetTime and GetTime() or 0
+    if C.scopeCheckedAt and now - C.scopeCheckedAt < 0.5 then return C.scopeShort or 0 end
+    C.scopeCheckedAt = now
+    local present = SnapshotGroup()
+    present[UnitName("player")] = nil
+    local unclaimed = C.handRunPlan.allRows and executeCompanionList or C.HandUnclaimed(C.HandStore().active, executeCompanionList)
+    local _, missing = C.HandScopeFound(C.handRunPlan.entries, C.KeepPresentCompanions(unclaimed, present), UnitName("player"), present, C.HandOwn())
+    C.scopeShort = table.getn(missing)
+    if C.scopeShort > 0 and not C.grinfoRefresh and (C.scopeAsks or 0) < 2 and now - (C.grinfoAskedAt or 0) >= 3 then
+        C.scopeAsks = (C.scopeAsks or 0) + 1
+        C.grinfoRefresh = true
+        RequestCompanionInfo()
+    end
+    return C.scopeShort
+end
+
+-- The chat line for a batch row whose group commands found no companion.
+function C.HandMissingNote(entry, slot)
+    if entry and entry.kind == "legacy" then
+        return C.GetLegacyWhisperName(entry) .. " (slot " .. slot .. ") is not in the group; its group commands were not sent."
+    end
+    local class = entry and (CLASS_LABELS[entry.class] or entry.class) or "?"
+    local role = entry and (ROLE_SHORT[entry.role] or entry.role) or "?"
+    return tostring(entry and entry.account) .. "'s " .. tostring(class) .. " " .. tostring(role) .. " (slot " .. slot
+        .. ") is not in the server's companion list; its group commands were not sent."
 end
 
 if not grinfoFrame then
@@ -2659,6 +2964,18 @@ local function StartRaidSort(verbose, onDone)
 end
 
 local function FinishExecute(status)
+    local handSubmitted=false
+    if C.handRunPlan then
+        local h=DB.handoff and DB.handoff.active
+        if h and h.phase=="running" then
+            local complete=status=="Execution complete. All queued commands were sent." or status=="Execution complete. All saved hires were already present."
+                or status=="Execution complete. No hire commands in this group."
+            h.phase=complete and "submitted" or "interrupted"
+            handSubmitted=complete
+            h.updated=time()
+        end
+        C.handRunPlan=nil
+    end
     executing = false
     executeQueue = nil
     executeIndex = 0
@@ -2683,7 +3000,35 @@ local function FinishExecute(status)
     if C.sortFrame then C.sortFrame:SetScript("OnUpdate", nil); C.sortFrame.busy = nil; C.sortFrame.onDone = nil end
     C.sortWaiting = nil
     C.whisperRun = nil
+    C.scopeAsks = nil; C.scopeCheckedAt = nil; C.scopeShort = nil; C.grinfoRefresh = nil
     SetStatus(status)
+    if handSubmitted then
+        local h=C.HandStore().active
+        if h and h.phase=="submitted" and C.HandComplete(h,UnitName("player")) then
+            h.updated=time()
+            if h.kind=="GRANT" and string.lower(h.origin)~=string.lower(UnitName("player")) then
+                -- A participant never advances the run; it reports its granted group to the leader.
+                h.phase="done"; C.HandStatus("Granted group submitted; reporting to " .. h.origin .. ". Server results are unverified."); C.HandSendLocal()
+            else
+                if h.phase=="waiting" and string.lower(h.steps[h.step].actor)==string.lower(UnitName("player")) then h.phase="ready" end
+                if h.phase=="waiting" then C.HandSendLocal()
+                elseif h.phase=="ready" and h.kind=="GRANT" then C.HandRunStep()
+                else
+                    if h.phase=="done" then C.handAuthority=nil; C.handReportDeadline=nil end
+                    C.HandStatus("Local commands submitted. " .. (h.phase=="done" and "Process finished; check server results." or "Next local group is ready. Click Execute."))
+                end
+            end
+        end
+    elseif C.handAuthority or C.handNotify then
+        local h=C.HandStore().active
+        local text=status .. " Process paused; check submitted hires before recovery."
+        -- A participant's granted batch that stops on its own tells the leader, which would
+        -- otherwise wait out its report deadline. Stop sends nothing more, and also discards
+        -- an unsent refusal notice; it was never execution authority.
+        if C.handAuthority and status~="Execution stopped." and h and h.kind=="GRANT" and h.phase=="interrupted"
+            and string.lower(h.origin)~=string.lower(UnitName("player")) then C.HandRefuse(text)
+        else C.HandPause(text) end
+    end
 end
 
 local function StopQueue()
@@ -2713,6 +3058,23 @@ local function NoteCommandSent(entry)
     end
 end
 
+-- A legacy deny list goes straight to its companion, so it waits for that companion to be in
+-- the group. Legacy setups need no wait here: group commands wait for every legacy companion
+-- before they expand, and expansion keeps only those present.
+function C.LegacyWhisperReady(entry)
+    if not entry or entry.chatType ~= "WHISPER" or entry.phase ~= "legacy-custom"
+        or not entry.target or entry.target == "" or SnapshotGroup()[entry.target] then C.legacyWait = nil; return true end
+    local now = GetTime and GetTime() or 0
+    if not C.legacyWait or C.legacyWait.entry ~= entry then C.legacyWait = {entry = entry, started = now} end
+    if now - C.legacyWait.started < C.LEGACY_JOIN_WAIT then
+        SetStatus("Waiting for " .. entry.target .. " to join.")
+        return false
+    end
+    Chat(entry.target .. " is not in the group; whispering anyway.")
+    C.legacyWait = nil
+    return true
+end
+
 local function ReadyForNext(nextEntry)
     AssignNewCompanions()
     if executeWaitingNod and not executeNodReady then
@@ -2735,19 +3097,28 @@ local function ReadyForNext(nextEntry)
             end
             executeWaitingNod = false
             executeNodReady = false
-            return true
+            return C.LegacyWhisperReady(nextEntry)
         end
         SetStatus("Waiting for nod from " .. (executeNodName ~= "" and executeNodName or "companion") .. ".")
         return false
     end
     if (executeHireReadyAt or 0) > 0 then
         local now = GetTime and GetTime() or 0
-        if now < executeHireReadyAt then
-            SetStatus("Pacing hires.")
+        local readyAt = executeHireReadyAt
+        if C.IsHireCommand(nextEntry) and C.hireBefore then
+            if not C.hireJoinedAt then
+                for name in pairs(SnapshotGroup()) do
+                    if not C.hireBefore[name] then C.hireJoinedAt = now; break end
+                end
+            end
+            if C.hireJoinedAt then readyAt = math.min(readyAt, C.hireJoinedAt + C.HIRE_JOIN_MARGIN) end
+        end
+        if now < readyAt then
+            SetStatus((C.IsHireCommand(nextEntry) and not C.hireJoinedAt) and "Waiting for the last companion to join." or "Pacing hires.")
             return false
         end
     end
-    return true
+    return C.LegacyWhisperReady(nextEntry)
 end
 
 local function HandleCommandAck()
@@ -2772,8 +3143,14 @@ end
 local function SendCurrentQueueEntry()
     local entry = executeQueue and executeQueue[executeIndex]
     if not entry then return false end
+    -- A held command waits for the companion list. A queue that starts on one (a commands
+    -- step, or every hire already present) sends it once, after the list expands.
+    if IsHeldPhase(entry.phase) and not executeGrinfoExpanded then return false end
     if not ResolveRoleDenyTarget(entry) then return false end
     if entry.kind == "normal" then executePartyBefore = SnapshotGroup() end
+    -- Who is in the group before a hire goes out, so its companion's join is seen even
+    -- when the roster updates at once.
+    if C.IsHireCommand(entry) then C.hireBefore = SnapshotGroup(); C.hireJoinedAt = nil end
     SendQueueEntry(entry)
     NoteCommandSent(entry)
     return true
@@ -2781,8 +3158,23 @@ end
 
 local function ExecuteQueue()
     if executing then SetStatus("Queue is already running."); return end
-    if C.whisperRun then executeQueue = C.BuildWhisperQueue(EnsureDB()) else executeQueue = C.BuildQueue(EnsureDB()) end
-    if table.getn(executeQueue) == 0 then SetStatus("Queue is empty."); C.whisperRun = nil; return end
+    local plan=C.handRunPlan or EnsureDB()
+    local overLimit = C.OverLimitHireCharacter(plan.entries, 4)
+    if overLimit then
+        C.whisperRun = nil
+        SetStatus(overLimit .. " has more than four companions in this hiring plan. Remove extras before executing.")
+        return
+    end
+    if C.whisperRun then executeQueue = C.BuildWhisperQueue(plan) else executeQueue = C.HandQueue(plan) end
+    local denyError = C.DenyQueueError(executeQueue)
+    if denyError then C.whisperRun = nil; SetStatus(denyError); Chat(denyError); return end
+    if table.getn(executeQueue) == 0 then
+        C.whisperRun = nil
+        -- A frozen run group of board-only rows (e.g. the current player) needs no command;
+        -- it completes and advances the run without claiming any server result.
+        if C.handRunPlan then FinishExecute("Execution complete. No hire commands in this group."); return end
+        SetStatus("Queue is empty."); return
+    end
     executing = true; executeIndex = 1; executeElapsed = 0; executeFrames = 0; executeHireReadyAt = 0; executeWaitingNod = false; executeNodReady = false; executeNodName = ""; executeNodStarted = 0; executeWhisperGap = 0; executeWaitElapsed = 0; executeWaitStarted = 0; executePartyBefore = nil; executeCompanions = {}; executeBaseline = SnapshotGroup(); executeCompanionList = {}; executeGrinfoRequested = false; executeGrinfoReady = false; executeGrinfoExpanded = false; C.executePreflightStarted = 0; C.executePreflightComplete = false
     if math.randomseed then math.randomseed((GetTime and GetTime() or 0) * 1000) end
     local needsPreflight = false
@@ -2812,14 +3204,17 @@ local function ExecuteQueue()
         C.executePreflightComplete = true
         SendCurrentQueueEntry()
         if C.whisperRun then SetStatus("Whispering 1/" .. table.getn(executeQueue) .. ".")
-        else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Pacing hires at 7.5-8.5s.") end
+        else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Each hire waits for the last companion to join.") end
     end
     if not executeFrame then executeFrame = CreateFrame("Frame") end
     executeFrame:SetScript("OnUpdate", function()
         if not executing then return end
         if not C.executePreflightComplete then
             if executeGrinfoReady then
-                local filtered, skipped = C.FilterExistingNormalHires(executeQueue, EnsureDB().entries, executeCompanionList)
+                -- In a run, companions hired by its earlier steps are not already present here.
+                local info = executeCompanionList
+                if C.handRunPlan then info = C.HandUnclaimed(C.HandStore().active, info) end
+                local filtered, skipped = C.FilterExistingNormalHires(executeQueue, (C.handRunPlan or EnsureDB()).entries, info)
                 executeQueue = filtered
                 C.executePreflightComplete = true
                 executeGrinfoRequested = false
@@ -2833,7 +3228,7 @@ local function ExecuteQueue()
                 end
                 SendCurrentQueueEntry()
                 if C.whisperRun then SetStatus("Whispering 1/" .. table.getn(executeQueue) .. ".")
-                else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Pacing hires at 7.5-8.5s.") end
+                else SetStatus("Executing 1/" .. table.getn(executeQueue) .. ". Each hire waits for the last companion to join.") end
                 return
             end
             local preflightWaited = 0
@@ -2872,6 +3267,7 @@ local function ExecuteQueue()
                     SetStatus("Waiting for companion role/class names from the server.")
                     return
                 end
+                if C.handRunPlan then FinishExecute("Handoff stopped: companion discovery timed out. Check sent hires before retrying."); return end
                 Chat("No companion list from the server; group denies were skipped.")
                 executeIndex = nextIndex
                 while executeIndex <= table.getn(executeQueue) and IsHeldPhase(executeQueue[executeIndex].phase) do
@@ -2886,27 +3282,35 @@ local function ExecuteQueue()
                 return
             end
             if not executeGrinfoExpanded then
-                if executeIndex > 1 then
-                    -- The current entry was already sent (normal flow: we are
-                    -- parked on the last sent index, expansion replaces what is ahead).
-                    if not ReadyForNext(nextEntry) then return end
-                    executeIndex = nextIndex
-                end
                 -- The newest hire can still be missing from the party roster when
                 -- the GRINFO reply lands; expanding then drops exactly that
                 -- companion (the N-1 skip). Wait until every name the server sent
                 -- is visible in the group, or until a bounded grace period ends.
+                -- Waiting ticks never move the queue: the advance below happens once.
                 local pendingNames = 0
                 local present = SnapshotGroup()
                 for ci = 1, table.getn(executeCompanionList) do
                     local cname = executeCompanionList[ci] and executeCompanionList[ci].name
                     if cname and cname ~= "" and not present[cname] then pendingNames = pendingNames + 1 end
                 end
+                -- Legacy companions are not in the server's list; wait for them by name too.
+                pendingNames = pendingNames + C.MissingLegacyNames((C.handRunPlan or EnsureDB()).entries, present)
+                -- In a run, also wait while the list cannot place one of the batch's own companions.
+                pendingNames = math.max(pendingNames, C.HandScopeShort())
                 if pendingNames > 0 and GetTime and (GetTime() - (executeWaitStarted or 0)) < 12 then
                     SetStatus("Waiting for " .. pendingNames .. " companion(s) to appear in the group.")
                     return
                 end
+                if executeIndex > 1 or not IsHeldPhase(currentEntry.phase) then
+                    -- The current entry was already sent (normal flow: we are
+                    -- parked on the last sent index, expansion replaces what is ahead).
+                    -- A lone first hire was sent too; only a held first entry was not.
+                    if not ReadyForNext(nextEntry) then return end
+                    executeIndex = nextIndex
+                end
                 ExpandPendingGroupDenies()
+                local denyError = C.DenyQueueError(executeQueue)
+                if denyError then Chat(denyError); FinishExecute(denyError); return end
                 executeGrinfoExpanded = true
                 executeWaitingNod = false
                 if currentEntry and IsHeldPhase(currentEntry.phase) then
@@ -2939,6 +3343,8 @@ end
 local escapeFrame = nil
 
 local function AddonWindowStillOpen()
+    if C.peerPrompt and C.peerPrompt:IsShown() then return true end
+    if C.peerPanel and C.peerPanel:IsShown() then return true end
     if choiceMenu and choiceMenu:IsShown() then return true end
     if abilityMenu and abilityMenu:IsShown() then return true end
     if legacyNameMenu and legacyNameMenu:IsShown() then return true end
@@ -2955,6 +3361,9 @@ local function AddonWindowStillOpen()
 end
 
 local function HideTopOverlay()
+    if C.peerPrompt and C.peerPrompt:IsShown() then C.peerPrompt:Hide(); return true end
+    if C.licenseView and C.licenseView:IsShown() then C.licenseView:Hide(); return true end
+    if C.peerPanel and C.peerPanel:IsShown() then C.peerPanel:Hide(); return true end
     if choiceMenu and choiceMenu:IsShown() then CloseChoiceMenu(); return true end
     if abilityMenu and abilityMenu:IsShown() then abilityMenu:Hide(); return true end
     if legacyNameMenu and legacyNameMenu:IsShown() then HideLegacyNameSuggestions(); return true end
@@ -3024,6 +3433,7 @@ function C.ApplyRaidMode()
     end
     if mainFrame.accountContent then
         if sort then mainFrame.accountContent:Hide() else mainFrame.accountContent:Show() end
+        C.AccountScroll(mainFrame.accountScroll:GetVerticalScroll())
     end
     if mainFrame.countText then
         if sort then mainFrame.countText:Hide() else mainFrame.countText:Show() end
@@ -3123,17 +3533,1555 @@ function C.StartWhispers()
     ExecuteQueue()
 end
 
+-- Account link adapter. Remote traffic cannot reach local action queues.
+function C.PeerRestoreConfig()
+    if C.peerConfigLoaded then return end
+    EnsureDB(); C.peerConfigLoaded = true
+    -- The first link panel stored only a local endpoint, not mutual consent.
+    -- Keep that exact version-1 endpoint as a draft; never promote it to approval.
+    local old=DB.peerConfig
+    if type(old)=="table" and old.version==1 and old.confirmed==true
+        and old.you==string.lower(UnitName("player") or "") and old.realm==GetRealmName() then
+        local draft=C.PeerNew(UnitName("player"),old.peer,old.realm)
+        if draft then C.peerDraft=draft.peerLabel end
+    end
+    DB.peerConfig=nil
+    local clean, count = {}, 0
+    if type(DB.peerLinks) == "table" then
+        for key, p in pairs(DB.peerLinks) do
+            if count < 128 and type(p) == "table" and p.version == 2 and type(p.scope) == "string" then
+                local you = p.scope == "*" and UnitName("player") or p.scope
+                local expected = C.LinkKey(you, p.peer, p.realm, p.scope == "*")
+                if expected and expected == key then
+                    local labels={}
+                    if type(p.bindings) == "table" then
+                        local n=0
+                        for name,label in pairs(p.bindings) do
+                            local bound=C.PeerNew(label,p.peer,p.realm)
+                            if n < 128 and bound and bound.you == name and (p.scope == "*" or p.scope == name) then
+                                labels[name]=label; n=n+1
+                            end
+                        end
+                    end
+                    local label=C.PeerNew(you,p.peerLabel,p.realm)
+                    clean[key] = {version=2, realm=p.realm, peer=p.peer, peerLabel=label and label.peer == p.peer and p.peerLabel or p.peer,
+                        scope=p.scope, bindings=labels, revoked=p.revoked == true or nil}; count=count+1
+                end
+            end
+        end
+    end
+    DB.peerLinks = clean
+    C.LicenseRestoreSaved()
+    C.RaidRestoreSaved()
+    RefreshAccountPanel()
+end
+
+function C.LicenseRestoreSaved()
+    C.remoteLicenses={}
+    if type(DB.peerSnapshots)~="table" then DB.peerSnapshots={} end
+    local saved=DB.peerSnapshots
+    local count=0
+    for key,r in pairs(saved) do
+        local copy=C.AccountSavedCopy(r,UnitName("player"),GetRealmName(),DB.peerLinks)
+            or C.LicenseSavedCopy(r,UnitName("player"),GetRealmName(),DB.peerLinks)
+        if copy and key==copy.realm .. ";" .. copy.source and count<128 then
+            C.remoteLicenses[key]=copy; count=count+1
+        end
+    end
+end
+
+function C.PeerVisibleEndpoint()
+    local f=C.peerPanel
+    if f and type(GetRealmName) == "function" and type(UnitName) == "function" then
+        return C.PeerNew(UnitName("player"), f.nameInput:GetText(), GetRealmName())
+    end
+    return C.peerState
+end
+
+function C.PeerAbort(reason)
+    if C.peerState then C.peerState.remoteLicense=nil; C.peerState.licenseWait=nil; C.peerState.licenseServe=nil end
+    C.PeerClear(C.peerState, reason)
+    C.peerPending=nil
+    C.licenseNotice="Unavailable: " .. (reason or "exchange cancelled")
+    if C.peerState then C.peerState.licenseAfterLink=nil end
+    if C.peerPrompt and C.promptSession==C.activeSession then C.promptSession=nil; C.peerPrompt:Hide() end
+    RefreshAccountPanel()
+    C.PeerRefresh()
+end
+
+function C.PeerRefresh()
+    C.SyncStore()
+    local f=C.peerPanel
+    if not f then return end
+    local endpoint=C.PeerVisibleEndpoint()
+    local session=endpoint and C.peerSessions and C.peerSessions[endpoint.realm .. ";" .. endpoint.peer]
+    local s=session and session.state
+    local text="Enter a known character on this realm, then Pair."
+    if endpoint then
+        text="Local: " .. endpoint.youLabel .. " | Remote: " .. endpoint.peerLabel .. " / " .. endpoint.realm .. " | Protocol 2"
+        local own=DB.peerLinks[C.LinkKey(endpoint.you,endpoint.peer,endpoint.realm,false)]
+        local all=DB.peerLinks[C.LinkKey(endpoint.you,endpoint.peer,endpoint.realm,true)]
+        text=text .. "\nSaved approval: " .. (own and own.revoked and "unlinked for this character" or (all and "all local characters" or (own and "this local character" or "none")))
+    end
+    if s then
+        local labels={waiting="Waiting for approval",approval="Approval needed",confirming="Confirming link",["confirm-sent"]="Confirming link",linked="Linked (data not synchronized)",disabled="Not connected"}
+        if s.remoteLicense then labels.linked="Linked (advisory account licenses received)" end
+        text=text .. "\n" .. s.peer .. ": " .. (labels[s.phase] or "Not connected")
+        if s.reason then text=text .. "\n" .. s.reason end
+    end
+    text=text .. "\nAccount details are peer claims, not ownership proof."
+    local r=endpoint and C.remoteLicenses and C.remoteLicenses[endpoint.realm .. ";" .. endpoint.peer]
+    if r then
+        text=text .. "\nPeer-claimed (read-only): " .. r.source .. " / " .. r.realm
+        text=text .. "\n" .. table.getn(r.entries) .. " character(s); see the sidebar."
+        text=text .. "\nSaved snapshot: " .. C.LicenseAgeLabel(r,time()) .. ". Not live."
+    else text=text .. "\nFreshness: unavailable. No saved peer license reply." end
+    text=text .. "\nSidebar rows are view-only. Linked hires can spend gold after Execute\non the initiating account, only for that plan."
+    if s and s.licenseWait then text=text .. "\nWaiting for a fresh advisory license reply."
+    elseif s and s.licenseAfterLink then text=text .. "\nWaiting for a fresh link before reading licenses."
+    elseif session and session.notice then text=text .. "\n" .. session.notice end
+    f.status:SetText(text)
+    if C.licenseView then C.licenseView.status:SetText(text) end
+    local busy=s and s.phase ~= "disabled" and s.phase ~= "linked"
+    if endpoint and not busy and not (session and session.pending) then f.pairButton:Enable() else f.pairButton:Disable() end
+    if f.licenseButton then
+        f.licenseButton:Enable() -- Always allow opening the result/unavailable view.
+    end
+end
+
+function C.PeerContextOK()
+    if (executing and not (C.handAuthority and C.handRunPlan)) or (C.sortFrame and C.sortFrame.busy) then return false end
+    if type(time) ~= "function" or type(GetTime) ~= "function" or type(GetRealmName) ~= "function" or type(UnitName) ~= "function" then return false end
+    local s=C.peerState
+    return not s or (s.you == string.lower(UnitName("player") or "") and s.realm == GetRealmName())
+end
+
+function C.LinkNonce()
+    C.peerSequence=(C.peerSequence or 0)+1
+    return string.format("%.0f%.0f%04d%d",time(),GetTime()*1000,math.random(1000,9999),C.peerSequence)
+end
+
+function C.PeerQueuePacket(packet)
+    if type(packet) ~= "string" or string.len(packet)>240 then return end
+    if C.peerPending then C.PeerAbort("Exchange interrupted; Pair again"); return end
+    C.peerPending=packet; C.peerSendAt=math.max(GetTime()+1,C.peerNextSend or 0)
+end
+
+function C.LinkPair()
+    local s=C.PeerVisibleEndpoint()
+    if not s then return end
+    if not C.SyncSelect(s,true) or not C.PeerContextOK() or C.peerPending then return end
+    if C.peerState and C.peerState.phase ~= "disabled" and C.peerState.phase ~= "linked" then return end
+    C.PeerAbort("New invitation")
+    C.licenseNotice=nil
+    C.peerState=s; s.remember=C.peerPanel.rememberCheck:GetChecked() and true or false
+    s.invitation=C.LinkInvite(s,C.LinkNonce(),time(),GetTime())
+    C.PeerQueuePacket(s.invitation)
+    C.peerPanel.nameInput:ClearFocus(); C.PeerRefresh()
+end
+
+function C.LinkForgetVisible(account)
+    local s=C.PeerVisibleEndpoint()
+    if not s then return end
+    C.SyncSelect(s,false)
+    C.LinkForget(DB.peerLinks,s.you,s.peer,s.realm,account)
+    if account and DB.peerSnapshots then DB.peerSnapshots[s.realm .. ";" .. s.peer]=nil end
+    if account and DB.peerRaidSnapshots then DB.peerRaidSnapshots[s.realm .. ";" .. s.peer]=nil end
+    C.LicenseRestoreSaved()
+    C.RaidRestoreSaved()
+    C.PeerAbort("Approval removed locally. The other account manages its own approval.")
+end
+
+function C.LinkApprove()
+    C.SyncActivate(C.promptSession)
+    local s=C.peerState
+    if not s or not C.PeerContextOK() or not C.peerPrompt or not C.peerPrompt:IsShown() or s.phase ~= "approval" then C.PeerAbort("Approval cancelled"); return end
+    s.remember=C.peerPrompt.rememberCheck:GetChecked() and true or false
+    C.PeerQueuePacket(C.LinkAccept(s,time(),GetTime()))
+    C.peerPrompt:Hide(); C.PeerRefresh()
+end
+
+function C.LinkDecline()
+    C.SyncActivate(C.promptSession)
+    local s=C.peerState
+    if not s or not C.PeerContextOK() then C.PeerAbort("Approval cancelled"); return end
+    local packet=C.LinkReject(s,time(),GetTime())
+    C.peerPrompt:Hide(); C.PeerQueuePacket(packet); C.PeerRefresh()
+end
+
+function C.LinkRaisePrompt()
+    local f=C.peerPrompt
+    local level=100
+    if type(EnumerateFrames)=="function" then
+        local other=EnumerateFrames()
+        while other do
+            local parent=other
+            while parent and parent~=f do parent=parent:GetParent() end
+            if not parent and other:IsShown() and other:GetFrameStrata()=="FULLSCREEN_DIALOG" then level=math.max(level,other:GetFrameLevel()+10) end
+            other=EnumerateFrames(other)
+        end
+    end
+    f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetFrameLevel(level); f:SetToplevel(true); f:EnableMouse(true); f:Raise()
+    -- Keep existing controls above the raised opaque parent on the legacy client.
+    for _,control in ipairs({f.dragBar,f.rememberCheck,f.acceptButton,f.rejectButton}) do
+        control:SetFrameStrata("FULLSCREEN_DIALOG"); control:SetFrameLevel(f:GetFrameLevel()+1)
+        control:EnableMouse(true); control:Show()
+    end
+end
+
+function C.LinkShowPrompt()
+    if not C.peerPrompt then
+        local f=CreateFrame("Frame","ShirsRaidBuilderLinkApproval",UIParent); C.peerPrompt=f
+        f:SetWidth(550); f:SetHeight(220); f:SetPoint("CENTER",UIParent,"CENTER",0,80); StylePanelFrame(f)
+        f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetToplevel(true)
+        f:SetScript("OnShow",C.LinkRaisePrompt)
+        f.title=MakeCaption(f,"",22,-20); f.title:SetWidth(506); f.title:SetHeight(52); f.title:SetJustifyH("LEFT")
+        f.rememberCheck=CreateFrame("CheckButton",nil,f,"UICheckButtonTemplate")
+        f.rememberCheck:SetWidth(20); f.rememberCheck:SetHeight(20); f.rememberCheck:SetPoint("TOPLEFT",f,"TOPLEFT",22,-78)
+        MakeCaption(f,"Remember this link for all characters on this account",48,-82)
+        local help=MakeCaption(f,"Unchecked: approval covers only this local character.\nAccept lets the peer hire and spend gold for its plan after Execute\non the initiating account. Licenses are peer claims, not proof.",22,-110)
+        help:SetWidth(506); help:SetHeight(42); help:SetJustifyH("LEFT")
+        f.acceptButton=MakeButton(f,"Accept",110,22,18,C.LinkApprove,true)
+        f.rejectButton=MakeButton(f,"Reject",110,144,18,C.LinkDecline,true)
+        f:SetScript("OnHide",function()
+            local session=C.promptSession; C.promptSession=nil
+            if session and session.state and session.state.phase=="approval" then
+                C.SyncActivate(session); C.PeerAbort("Approval cancelled locally")
+            end
+        end)
+    end
+    C.peerPrompt.title:SetText(C.peerState.peerLabel .. " wants to synchronize with this character.\nRealm: " .. C.peerState.realm)
+    C.peerPrompt.rememberCheck:SetChecked(nil); C.peerPrompt:Show(); C.LinkRaisePrompt()
+end
+
+function C.LicenseRefreshRemote(background)
+    local selected=C.PeerVisibleEndpoint()
+    if selected then C.SyncSelect(selected,true) end
+    if not C.licenseView then
+        local f=CreateFrame("Frame","ShirsRaidBuilderLicenseView",UIParent); C.licenseView=f
+        f:SetWidth(570); f:SetHeight(350); f:SetPoint("CENTER",UIParent,"CENTER",0,0); StylePanelFrame(f)
+        f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetToplevel(true)
+        MakeCaption(f,"Advisory peer licenses (read-only)",22,-14)
+        f.status=MakeCaption(f,"",22,-44); f.status:SetWidth(526); f.status:SetHeight(248)
+        f.status:SetJustifyH("LEFT"); f.status:SetJustifyV("TOP")
+        f.closeButton=MakeButton(f,"Close",100,22,18,function() f:Hide() end,true)
+    end
+    local view=C.licenseView
+    if not background then
+        view:SetFrameLevel(C.peerPanel:GetFrameLevel()+10); view:Show(); view:Raise()
+    end
+    for _,control in ipairs({view.closeButton,view.dragBar}) do
+        control:SetFrameStrata("FULLSCREEN_DIALOG"); control:SetFrameLevel(view:GetFrameLevel()+1)
+    end
+    C.licenseNotice="Saved data only. Use Refresh Synchronization to update."
+    C.PeerRefresh()
+end
+
+function C.LicenseObserveOne(records)
+    local s=C.peerState
+    local w=s and s.licenseServe
+    if not w or not w.sent or not C.PeerContextOK() or not C.PeerAlive(s,time(),GetTime()) then return end
+    if GetTime()<w.sent or GetTime()-w.sent>=10 then s.licenseServe=nil; return end
+    if type(records)=="table" then w.records=records end
+end
+
+function C.LicenseEvent(p)
+    local s=C.peerState
+    if not C.LicenseBound(s,p,arg2,time(),GetTime()) then return end
+    if p.kind=="DATA" then
+        if C.LicenseReceive(s,arg1,arg2,time(),GetTime()) then
+            C.licenseNotice=nil; C.remoteLicenses=C.remoteLicenses or {}
+            local copy=C.LicenseSavedCopy(s.remoteLicense,s.you,s.realm,DB.peerLinks)
+            if copy then
+                DB.peerSnapshots=DB.peerSnapshots or {}
+                DB.peerSnapshots[s.realm .. ";" .. s.peer]=copy
+                C.remoteLicenses[s.realm .. ";" .. s.peer]=copy
+            end
+            RefreshAccountPanel()
+        end
+        C.PeerRefresh(); return
+    end
+    s.licenseSeen=s.licenseSeen or {}
+    if s.licenseSeen[p.nonce] or s.licenseServe or s.licenseOut then return end
+    if s.licenseNext and GetTime()<s.licenseNext then return end
+    local n=0; for _ in pairs(s.licenseSeen) do n=n+1 end
+    if n>=8 then return end
+    s.licenseSeen[p.nonce]=true; s.licenseNext=GetTime()+10
+    s.licenseServe={nonce=p.nonce}
+    -- One reciprocal read publishes the initiating account too, without a loop.
+    if p.kind=="GET" and not s.licenseWait and not s.licenseAfterLink then s.licenseAfterLink="reply" end
+    s.raidServe={nonce=p.nonce,started=GetTime()}
+    C.RaidRequestLocal()
+    -- Fresh local read, not a SavedVariables cache; no server ownership proof.
+    EnsureInviteListener()
+    if type(SendChatMessage)=="function" then
+        s.licenseServe.sent=GetTime()
+        if not pcall(SendChatMessage,".z addinvite list","SAY") then s.licenseServe=nil end
+    end
+end
+
+function C.PeerTickOne()
+    -- Refresh labels once per second; never allocate sidebar rows per frame.
+    if not C.peerRefreshAt or GetTime()>=C.peerRefreshAt then
+        C.peerRefreshAt=GetTime()+1; C.PeerRefresh()
+        for _,label in ipairs(C.licenseAgeLabels or {}) do
+            label.text:SetText(C.LicenseAgeLabel(label.snapshot,time()))
+        end
+    end
+    local s=C.peerState
+    if not s then return end
+    if s.phase=="disabled" and s.licenseAfterLink then
+        s.licenseAfterLink=nil; C.licenseNotice="Unavailable: " .. (s.reason or "link not established")
+    end
+    if s.phase=="disabled" and not C.peerPending then return end
+    if s.licenseWait and (GetTime()<s.licenseWait.started or GetTime()-s.licenseWait.started>=45) then
+        s.licenseWait=nil; C.licenseNotice="Unavailable: no validated license reply arrived. Try again."
+    end
+    if s.licenseServe and s.licenseServe.records and (C.raidReadReady or GetTime()-s.licenseServe.sent>=(C.raidAwaitCCP and 9 or 2)) then
+        C.RaidReadLocal()
+        local rows=C.AccountReadLocal(s.licenseServe.records)
+        s.licenseOut=C.AccountPackets(s,s.licenseServe.nonce,DB.syncAccountId,rows,time())
+        s.licenseServe=nil
+    end
+    if s.licenseServe and s.licenseServe.sent and GetTime()-s.licenseServe.sent>=10 then s.licenseServe=nil end
+    if s.raidWait and (GetTime()<s.raidWait.started or GetTime()-s.raidWait.started>=45) then s.raidWait=nil end
+    if s.raidServe and (C.raidReadReady or GetTime()-s.raidServe.started>=(C.raidAwaitCCP and 10 or 2)) then
+        s.raidOut=C.RaidPackets(s,s.raidServe.nonce,C.RaidReadLocal()); s.raidServe=nil
+    end
+    if not C.PeerContextOK() then C.PeerAbort("Builder closed or local execution active"); return end
+    if s.phase ~= "disabled" and not C.PeerAlive(s,time(),GetTime()) then
+        C.peerPending=nil
+        if C.peerPrompt and C.promptSession==C.activeSession then C.promptSession=nil; C.peerPrompt:Hide() end
+        s.reason="Timed out. Receiver may be offline, have SRB closed, or be unable to receive whispers."
+        s.licenseAfterLink=nil; s.licenseWait=nil; s.remoteLicense=nil
+        C.licenseNotice="Unavailable: " .. s.reason
+        C.PeerRefresh(); return
+    end
+    if s.handOut and not C.peerPending then
+        if not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) then C.PeerAbort("Handoff transfer cancelled"); return end
+        local packet=table.remove(s.handOut,1)
+        if table.getn(s.handOut)==0 then s.handOut=nil end
+        if packet then C.PeerQueuePacket(packet); C.peerSendAt=math.max(GetTime(),C.peerNextSend or 0) end
+    end
+    if s.planOut and not C.peerPending then
+        if not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) then C.PeerAbort("Plan share cancelled"); return end
+        local packet=table.remove(s.planOut,1)
+        if table.getn(s.planOut)==0 then s.planOut=nil end
+        if packet then C.PeerQueuePacket(packet); C.peerSendAt=math.max(GetTime(),C.peerNextSend or 0) end
+    end
+    if s.licenseOut and not C.peerPending then
+        local packet=table.remove(s.licenseOut,1)
+        if table.getn(s.licenseOut)==0 then s.licenseOut=nil end
+        if packet then C.PeerQueuePacket(packet); C.peerSendAt=math.max(GetTime(),C.peerNextSend or 0) end
+    end
+    if s.raidOut and not s.licenseOut and not C.peerPending then
+        local packet=table.remove(s.raidOut,1)
+        if table.getn(s.raidOut)==0 then s.raidOut=nil end
+        if packet then C.PeerQueuePacket(packet); C.peerSendAt=math.max(GetTime(),C.peerNextSend or 0) end
+    end
+    if C.peerPending and GetTime() >= C.peerSendAt and GetTime()>=(C.peerNextSend or 0) then
+        local packet=C.peerPending; C.peerPending=nil; C.peerNextSend=GetTime()+0.25
+        local parsed=C.LinkParse(packet)
+        local hand=C.HandParse(packet)
+        local plan=C.PlanParse(packet) or hand
+        if plan and not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) then C.PeerAbort("Plan share cancelled"); return end
+        local license=C.LicenseParse(packet) or C.RaidParse(packet) or C.AccountParse(packet) or plan
+        if not (parsed and parsed.expires>time()) and not (license and s.phase=="linked" and C.PeerAlive(s,time(),GetTime())) then C.PeerAbort("Invitation expired; Pair again"); return end
+        local ok=false
+        if type(SendChatMessage) == "function" then ok=pcall(SendChatMessage, packet, "WHISPER", nil, s.peer) end
+        if not ok then C.PeerAbort("Whisper submission failed; Pair again"); return end
+        if plan and s.planProgress and s.planProgress.nonce==plan.nonce then s.planProgress.sent=s.planProgress.sent+1 end
+        if hand and s.handProgress and s.handProgress.nonce==hand.nonce then s.handProgress.sent=s.handProgress.sent+1 end
+    end
+    if s.phase=="linked" and s.licenseAfterLink and not C.peerPending then
+        local reply=s.licenseAfterLink=="reply"
+        s.licenseAfterLink=nil
+        C.PeerQueuePacket(C.LicenseRequest(s,C.LinkNonce(),GetTime(),reply))
+    end
+end
+
+function C.PeerEventOne()
+    if event == "PLAYER_LEAVING_WORLD" or event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_LOGOUT" then
+        C.PeerAbort("Context changed; use Read peer licenses to try again"); return
+    end
+    if event ~= "CHAT_MSG_WHISPER" or not C.PeerContextOK() then return end
+    local license=C.LicenseParse(arg1)
+    if license then C.LicenseEvent(license); return end
+    local p=C.LinkParse(arg1)
+    if not p then return end
+    if p.kind == "INVITE" then
+        local now=GetTime()
+        local s=C.LinkIncoming(arg1,arg2,UnitName("player"),GetRealmName(),C.LinkNonce(),time(),now)
+        if not s then return end
+        -- Simultaneous invitations choose one initiator, the name that sorts first. An own
+        -- invitation still unsent, or made 10 s ago or more, did not cross this one: it went
+        -- out while the other side was offline, so this side takes the fresh one instead. A
+        -- younger one is sent once more; a copy that crossed is ignored as seen.
+        -- Unknown peers still take the explicit approval branch below.
+        local w=C.peerState
+        if w and w.phase=="waiting" and w.peer==p.sender then
+            if p.sender<p.target or C.peerPending or now-w.started>=10 then
+                C.PeerClear(w,"Incoming link invitation"); C.peerPending=nil
+            elseif w.resent~=w.a then
+                w.resent=w.a; w.invitation=C.LinkPacket(w,"INVITE"); C.PeerQueuePacket(w.invitation)
+            end
+        end
+        if C.peerPending or (C.peerState and C.peerState.phase ~= "disabled" and C.peerState.phase ~= "linked") then return end
+        if C.activeSession.nextInvite and now < C.activeSession.nextInvite then return end
+        C.linkSeen=C.linkSeen or {}
+        for key,expiry in pairs(C.linkSeen) do if expiry <= time() then C.linkSeen[key]=nil end end
+        local key=s.peer .. ";" .. s.a
+        if C.linkSeen[key] then return end
+        local count=0; for _ in pairs(C.linkSeen) do count=count+1 end
+        if count >= 128 then return end
+        C.linkSeen[key]=s.expires; C.activeSession.nextInvite=now+5; C.peerState=s
+        if C.LinkKnown(DB.peerLinks,s.you,s.peer,s.realm) then
+            s.existing=true
+            local all=DB.peerLinks[C.LinkKey(s.you,s.peer,s.realm,true)]
+            s.remember=type(all) == "table" and all.revoked ~= true
+            C.PeerQueuePacket(C.LinkAccept(s,time(),now))
+        else
+            if not mainFrame or not mainFrame:IsShown() then C.PeerClear(s,"Open SRB to approve a new link"); return end
+            -- Each pending invitation stays in its own session. Prompts are serialized.
+            C.activeSession.state=s
+        end
+        C.PeerRefresh(); return
+    end
+    local s=C.peerState
+    if not s then return end
+    local previous=s.phase
+    local invitation=s.invitation
+    local response=C.LinkReceive(s,arg1,arg2,time(),GetTime())
+    if response and previous == "waiting" then
+        if C.peerPending == invitation then C.peerPending=nil end
+        s.invitation=nil; s.retryAt=nil; s.retries=nil
+    end
+    if type(response) == "string" then C.PeerQueuePacket(response) end
+    if response and s.phase == "linked" and previous ~= "linked" then
+        C.LinkSave(DB.peerLinks,s,s.remember)
+        C.peerAutoAttempted=C.peerAutoAttempted or {}; C.peerAutoAttempted[s.realm .. ";" .. s.peer]=true
+    end
+    C.PeerRefresh()
+end
+
+function C.PeerOnBuilderOpen(opened)
+    C.PeerRestoreConfig()
+    if not C.peerDriver then
+        C.peerDriver=CreateFrame("Frame")
+        for _,name in ipairs({"CHAT_MSG_WHISPER","CHAT_MSG_ADDON","UPDATE_INSTANCE_INFO","PLAYER_LEAVING_WORLD","PLAYER_LOGOUT"}) do C.peerDriver:RegisterEvent(name) end
+        C.peerDriver:SetScript("OnEvent",C.PeerEvent); C.peerDriver:SetScript("OnUpdate",C.PeerTick)
+    end
+end
+
+function C.PeerLogin()
+    C.PeerOnBuilderOpen()
+    if C.peerLoginDone then return end
+    C.peerLoginDone=true
+    C.SyncRefreshAll()
+end
+
+-- Runtime sessions are never serialized. Each endpoint owns its queue and waits.
+function C.SyncStore()
+    local session=C.activeSession
+    if not session then return end
+    session.state=C.peerState; session.pending=C.peerPending
+    session.sendAt=C.peerSendAt; session.notice=C.licenseNotice
+end
+
+function C.SyncActivate(session)
+    C.SyncStore(); C.activeSession=session
+    C.peerState=session and session.state; C.peerPending=session and session.pending
+    C.peerSendAt=session and session.sendAt; C.licenseNotice=session and session.notice
+end
+
+function C.SyncSelect(endpoint,create)
+    C.peerSessions=C.peerSessions or {}
+    local key=endpoint.realm .. ";" .. endpoint.peer
+    local session=C.peerSessions[key]
+    if not session and create then
+        local n=0; for _ in pairs(C.peerSessions) do n=n+1 end
+        if n>=128 then return nil end
+        session={state=endpoint}; C.peerSessions[key]=session
+    end
+    C.SyncActivate(session)
+    return session
+end
+
+-- Called several times a frame; the sorted list is rebuilt only when sessions change.
+function C.SyncKeys()
+    C.SyncStore()
+    local sessions,n=C.peerSessions or {},0
+    for _ in pairs(sessions) do n=n+1 end
+    if not C.syncKeys or C.syncKeysOf~=sessions or table.getn(C.syncKeys)~=n then
+        local keys={}; for key in pairs(sessions) do table.insert(keys,key) end
+        table.sort(keys); C.syncKeys=keys; C.syncKeysOf=sessions
+    end
+    return C.syncKeys
+end
+
+function C.PeerAbortAll(reason)
+    for _,key in ipairs(C.SyncKeys()) do
+        C.SyncActivate(C.peerSessions[key]); C.PeerAbort(reason)
+    end
+    C.SyncStore()
+end
+
+-- Closing the builder cancels handshakes and unsent local work, but keeps
+-- established links so a closed builder can still receive a plan offer.
+-- Receipt and approval re-check PlanAuthorized independently.
+function C.PeerBuilderClosed(reason)
+    for _,key in ipairs(C.SyncKeys()) do
+        local session=C.peerSessions[key]; local s=session.state
+        C.SyncActivate(session)
+        if s.phase=="linked" then
+            C.peerPending=nil
+            s.planOut=nil; s.licenseOut=nil; s.raidOut=nil; s.licenseAfterLink=nil
+            s.licenseWait=nil; s.licenseServe=nil; s.raidWait=nil; s.raidServe=nil
+            if C.peerPrompt and C.promptSession==session then C.promptSession=nil; C.peerPrompt:Hide() end
+        else C.PeerAbort(reason) end
+    end
+    C.SyncStore()
+end
+
+function C.SyncRefreshAll()
+    C.PeerRestoreConfig()
+    C.RaidRequestLocal()
+    EnsureInviteListener()
+    if not C.accountReadAt or GetTime()-C.accountReadAt>=2 then
+        C.accountReadAt=GetTime()
+        if type(SendChatMessage)=="function" then pcall(SendChatMessage,".z addinvite list","SAY") end
+    end
+    C.peerAutoAttempted={}
+    C.PeerAutoNext()
+    C.PeerRefresh()
+end
+
+function C.PeerAutoNext()
+    if not C.peerAutoAttempted or not C.PeerContextOK() then return end
+    local names={}
+    for _,p in pairs(DB.peerLinks or {}) do
+        if p.realm==GetRealmName() and C.LinkKnown(DB.peerLinks,UnitName("player"),p.peer,p.realm) then names[p.peer]=p end
+    end
+    local sorted={}; for name in pairs(names) do table.insert(sorted,name) end; table.sort(sorted)
+    for _,name in ipairs(sorted) do
+        local p=names[name]; local key=p.realm .. ";" .. p.peer
+        if not C.peerAutoAttempted[key] then
+            C.peerAutoAttempted[key]=true
+            local endpoint=C.PeerNew(UnitName("player"),p.peerLabel or p.peer,p.realm)
+            local session=endpoint and C.SyncSelect(endpoint,true)
+            local s=C.peerState
+            if session and not C.peerPending and not s.licenseWait and not s.raidWait
+                and not s.licenseAfterLink and not s.licenseOut and not s.raidOut then
+                if s.phase=="linked" and C.PeerAlive(s,time(),GetTime()) then
+                    C.PeerQueuePacket(C.LicenseRequest(s,C.LinkNonce(),GetTime()))
+                elseif s.phase=="disabled" then
+                    s.remember=p.scope=="*"; s.licenseAfterLink=true
+                    C.PeerQueuePacket(C.LinkInvite(s,C.LinkNonce(),time(),GetTime()))
+                end
+            end
+            C.SyncStore()
+        end
+    end
+end
+
+function C.PeerTick()
+    C.HandTick()
+    C.PlanPromptTick()
+    -- Poll MCP's table each frame, but re-read the account and redraw only once it lands.
+    if C.mcpPending then C.RaidReadLocal(); if not C.mcpPending then C.AccountReadLocal(); RefreshAccountPanel() end end
+    if C.localRaidPending and (C.raidReadReady or GetTime()-C.localRaidPending>=(C.raidAwaitCCP and 10 or 2)) then
+        C.localRaidPending=nil; C.RaidReadLocal(); RefreshAccountPanel()
+    end
+    for _,key in ipairs(C.SyncKeys()) do
+        C.SyncActivate(C.peerSessions[key]); C.PeerTickOne()
+    end
+    C.SyncStore()
+    if not C.peerPrompt or not C.peerPrompt:IsShown() then
+        for _,key in ipairs(C.SyncKeys()) do
+            local session=C.peerSessions[key]
+            if session.state.phase=="approval" and C.PeerContextOK() then
+                C.SyncActivate(session); C.promptSession=session; C.LinkShowPrompt(); break
+            end
+        end
+    end
+end
+
+function C.LicenseObserve(records)
+    if type(records)=="table" then C.AccountReadLocal(records) end
+    for _,key in ipairs(C.SyncKeys()) do
+        C.SyncActivate(C.peerSessions[key]); C.LicenseObserveOne(records)
+    end
+    C.SyncStore()
+end
+
+function C.PeerEvent()
+    if event=="CHAT_MSG_ADDON" then C.RaidLocalEvent(); return end
+    if event=="UPDATE_INSTANCE_INFO" then C.raidNativeReady=true; return end
+    if event~="CHAT_MSG_WHISPER" then
+        -- Leaving the world ends every exchange. A group change does not: link trust rests on
+        -- whisper senders, saved approval and session nonces, and every hire changes the roster.
+        if event=="PLAYER_LEAVING_WORLD" or event=="PLAYER_LOGOUT" or event=="PLAYER_ENTERING_WORLD" then C.PeerAbortAll("Context changed; refresh to try again") end
+        return
+    end
+    if not C.PeerContextOK() then return end
+    local p=C.LinkParse(arg1) or C.LicenseParse(arg1) or C.RaidParse(arg1) or C.AccountParse(arg1) or C.PlanParse(arg1) or C.HandParse(arg1)
+    if not p or type(arg2)~="string" or p.sender~=string.lower(arg2)
+        or p.target~=string.lower(UnitName("player") or "") or p.realm~=GetRealmName() then return end
+    local endpoint=C.PeerNew(UnitName("player"),arg2,GetRealmName())
+    if not endpoint or not C.SyncSelect(endpoint,p.kind=="INVITE") then return end
+    if C.HandParse(arg1) then
+        C.HandReceive(C.peerState,arg1,arg2,DB.peerLinks,time(),GetTime())
+    elseif C.PlanParse(arg1) then
+        C.PlanReceive(C.peerState,arg1,arg2,DB.peerLinks,time(),GetTime())
+    elseif C.AccountParse(arg1) then
+        if C.AccountReceive(C.peerState,arg1,arg2,time(),GetTime()) then
+            local copy=C.AccountSavedCopy(C.peerState.remoteLicense,UnitName("player"),GetRealmName(),DB.peerLinks)
+            local key=p.realm .. ";" .. p.sender
+            local previous=DB.peerSnapshots and DB.peerSnapshots[key]
+            -- An approved endpoint cannot silently change its saved account identity.
+            if copy and (not previous or not previous.accountId or previous.accountId==copy.accountId) then
+                DB.peerSnapshots=DB.peerSnapshots or {}; DB.peerSnapshots[key]=copy
+                C.LicenseRestoreSaved(); RefreshAccountPanel()
+            end
+        end
+    elseif C.RaidParse(arg1) then
+        if C.RaidReceive(C.peerState,arg1,arg2,time(),GetTime()) then
+            local r=C.RaidSavedCopy(C.peerState.remoteRaids)
+            if r and C.LinkKnown(DB.peerLinks,UnitName("player"),r.source,r.realm) then
+                DB.peerRaidSnapshots=DB.peerRaidSnapshots or {}
+                DB.peerRaidSnapshots[r.realm .. ";" .. r.source]=r
+                C.RaidRestoreSaved(); RefreshAccountPanel()
+            end
+        end
+    else C.PeerEventOne() end
+    C.SyncStore(); C.PeerRefresh()
+end
+
+function C.RaidRestoreSaved()
+    C.remoteRaids={}
+    if type(DB.peerRaidSnapshots)~="table" then DB.peerRaidSnapshots={} end
+    local n=0
+    for key,r in pairs(DB.peerRaidSnapshots) do
+        local copy=C.RaidSavedCopy(r)
+        if copy and n<128 and key==copy.realm .. ";" .. string.lower(copy.source)
+            and copy.realm==GetRealmName() and C.LinkKnown(DB.peerLinks,UnitName("player"),copy.source,copy.realm) then
+            C.remoteRaids[key]=copy; n=n+1
+        end
+    end
+end
+
+function C.RaidReadLocal()
+    local realm,player=GetRealmName(),UnitName("player")
+    if C.mcpRealm~=realm or C.mcpPlayer~=player then
+        C.mcpRealm=realm; C.mcpPlayer=player; C.mcpRows={}; C.mcpAlts=nil; C.mcpRoster={}
+        C.mcpPending=nil; C.mcpBase=nil; C.localRaids=nil; C.mcpHead=nil
+    end
+    local data=C.MCPGlobal("MCP_SelfLockData")
+    if C.mcpPending and GetTime()>=C.mcpPending and GetTime()-C.mcpPending<10
+        and type(data)=="table" and data~=C.mcpBase then
+        C.mcpPending=nil
+        local now,up=time(),GetTime()
+        C.localRaids=C.MCPLockSnapshot(data.locks,now,up)
+        C.mcpRows=C.mcpRows or {}
+        if C.localRaids.known then C.mcpRows[string.lower(player)]=C.localRaids end
+        if type(data.alts)=="table" and data.alts~=C.mcpAlts
+            and (type(C.mcpBase)~="table" or data.alts~=C.mcpBase.alts) and table.getn(data.alts)<=128 then
+            C.mcpAlts=data.alts; C.mcpRoster={}
+            local seen={}
+            for _,alt in ipairs(data.alts) do
+                if type(alt)=="table" and C.IsSafeCharacterName(alt.name) then
+                    local key=string.lower(alt.name)
+                    if key~=string.lower(player) and not seen[key] then
+                        seen[key]=true
+                        if alt.level==60 then table.insert(C.mcpRoster,{name=alt.name,level=60}) end
+                        local snapshot=C.MCPLockSnapshot(alt.locks,now,up)
+                        if snapshot.known then C.mcpRows[key]=snapshot end
+                    end
+                end
+            end
+        end
+        C.raidReadReady=true
+    end
+    if C.mcpPending and (GetTime()<C.mcpPending or GetTime()-C.mcpPending>=10) then C.mcpPending=nil end
+    if not C.localRaids then C.localRaids={known=false,observed=time(),entries={}} end
+    return C.localRaids
+end
+
+function C.MCPGlobal(name)
+    if type(_G)=="table" then return _G[name] end
+    if type(getglobal)=="function" then return getglobal(name) end
+end
+
+function C.RaidRequestLocal()
+    if not C.PeerContextOK() then return end
+    if C.localRaidPending and GetTime()>=C.localRaidPending and GetTime()-C.localRaidPending<10 then return end
+    if C.raidRequestAt and GetTime()>=C.raidRequestAt and GetTime()-C.raidRequestAt<2 then return end
+    C.raidRequestAt=GetTime(); C.raidReadReady=nil; C.raidLocalData=nil; C.raidLocalBuffer=nil
+    C.localRaidPending=GetTime()
+    C.RaidReadLocal()
+    C.localRaids={known=false,observed=time(),entries={}}
+    C.raidAwaitCCP=true -- retain the bounded ten-second peer response window
+    if type(C.MCPGlobal("MCP_Send"))=="function" and type(SendChatMessage)=="function" then
+        -- MCP_Send routes to RAID/PARTY when grouped; these are server reads.
+        local command=".stats locks"
+        if C.MCPGlobal("MCP_SelfLockProto")==2 then command=".stats locks alts" end
+        pcall(SendChatMessage,command,"SAY")
+    end
+end
+
+-- Observe MCP's commit boundary, then read its table on the next tick.
+function C.RaidLocalEvent()
+    if type(arg1)~="string" or string.len(arg1)>8192 then return end
+    if string.find(arg1,"^%[nexus%] ACINFO:SELFLOCK:HEAD %d+:%d+:%d+$")
+        or string.find(arg1,"^%[nexus%] ACINFO:SELFLOCK:HEAD %d+:%d+:%d+:%d+:%d+$") then
+        C.RaidReadLocal(); C.mcpBase=C.MCPGlobal("MCP_SelfLockData")
+        C.mcpHead=GetTime(); C.mcpHeadRealm=GetRealmName(); C.mcpHeadPlayer=UnitName("player")
+    elseif arg1=="[nexus] ACINFO:SELFLOCK:END" and C.mcpHead
+        and C.mcpHeadRealm==GetRealmName() and C.mcpHeadPlayer==UnitName("player")
+        and GetTime()>=C.mcpHead and GetTime()-C.mcpHead<10 then
+        C.mcpPending=C.mcpHead; C.mcpHead=nil
+    end
+end
+
+function C.RaidRowText(snapshot)
+    if not snapshot or snapshot.known~=true then return "" end
+    return C.SavedRaidLabels(snapshot.entries,type(time)=="function" and time())
+end
+
+function C.AccountReadLocal(records)
+    EnsureDB()
+    local realm=GetRealmName(); local now=type(time)=="function" and time(); local player=UnitName("player")
+    if type(DB.localAccountRows)~="table" then DB.localAccountRows={} end
+    local old=type(DB.localAccountRows[realm])=="table" and DB.localAccountRows[realm] or {}
+    if not C.RaidNumber(now,1,2147483647) then return C.AccountMerge({},old) end
+    if not C.AccountIdentity(DB.syncAccountId) then DB.syncAccountId=C.LinkNonce() end
+    local input=records
+    if not input then
+        -- The saved server list refills own characters missing from these rows. It belongs to
+        -- this realm on first use, or when it names the character you are on.
+        local list=type(DB.inviteCharacters)=="table" and DB.inviteCharacters or {}
+        input={}
+        if not DB.localAccountRows[realm] or type(list[player or ""])=="table" then
+            local have={}
+            for _,e in ipairs(old) do if type(e)=="table" and type(e.name)=="string" then have[string.lower(e.name)]=true end end
+            for _,e in pairs(list) do
+                if type(e)=="table" and type(e.name)=="string" and not have[string.lower(e.name)] then table.insert(input,e) end
+            end
+        end
+    end
+    -- Loading screens and logout can report level 0. Characters never lose levels, so only a
+    -- real live reading replaces the listed level, and a bad one never drops a level-60 row.
+    local live=type(UnitLevel)=="function" and UnitLevel("player") or nil
+    if type(live)~="number" or live<1 then live=nil end
+    local valid,excluded={},{}
+    for _,e in pairs(type(input)=="table" and input or {}) do
+        if type(e)=="table" and C.IsSafeCharacterName(e.name) then
+            local level=e.level
+            if level==nil and type(DB.characterLevels)=="table" then level=DB.characterLevels[e.name] end
+            if string.lower(e.name)==string.lower(player or "") and live then level=live end
+            if level==60 then
+                table.insert(valid,{name=e.name,level=60,dungeonLicense=e.dungeonLicense,raidLicense=e.raidLicense,faction=e.faction})
+            elseif level~=nil then excluded[string.lower(e.name)]=true end
+        end
+    end
+    local rows=C.AccountMerge(old,C.AccountCollect(valid,now))
+    -- MCP discovers level-60 names, not licenses; never overwrite an existing row.
+    local known,discovered={},{}
+    for _,e in ipairs(rows) do known[string.lower(e.name)]=true end
+    for _,e in ipairs(C.mcpRealm==realm and C.mcpRoster or {}) do
+        if not known[string.lower(e.name)] then table.insert(discovered,e) end
+    end
+    rows=C.AccountMerge(rows,C.AccountCollect(discovered,now))
+    local found=false
+    for _,e in ipairs(rows) do if string.lower(e.name)==string.lower(player or "") then found=true end end
+    if not found and live==60 then
+        rows=C.AccountMerge(rows,C.AccountCollect({{name=player,level=60}},now))
+    elseif live and live~=60 then excluded[string.lower(player or "")]=true end
+    local out={}
+    for _,e in ipairs(rows) do
+        if not excluded[string.lower(e.name)] then
+            local state=C.mcpRealm==realm and C.mcpRows and C.mcpRows[string.lower(e.name)]
+            if state then
+                C.AccountSetRaids(e,{known=state.known,observedAt=state.observed,instances=state.entries},now)
+            end
+            table.insert(out,e)
+        end
+    end
+    -- Each row names its character's faction as the server list or the live game gives it,
+    -- so a linked account can offer that faction's races.
+    local server=type(DB.inviteCharacters)=="table" and DB.inviteCharacters or {}
+    for _,e in ipairs(out) do
+        if not e.faction and type(server[e.name])=="table" then e.faction=C.KnownFaction(server[e.name].faction) end
+        if not e.faction and string.lower(e.name)==string.lower(player or "") and type(UnitFactionGroup)=="function" then e.faction=C.KnownFaction(UnitFactionGroup("player")) end
+    end
+    DB.localAccountRows[realm]=out
+    return out
+end
+
+function C.LicenseSidebar(y)
+    C.licenseAgeLabels={}
+    local peers={}
+    for _,p in pairs(DB.peerLinks or {}) do
+        if p.realm==GetRealmName() and C.LinkKnown(DB.peerLinks,UnitName("player"),p.peer,p.realm) then peers[p.realm .. ";" .. p.peer]=p end
+    end
+    local keys={}; for key in pairs(peers) do table.insert(keys,key) end; table.sort(keys)
+    local groups,order={},{}
+    for _,key in ipairs(keys) do
+        local snapshot=C.remoteLicenses and C.remoteLicenses[key]
+        local id=snapshot and C.AccountIdentity(snapshot.accountId) and snapshot.realm .. ";" .. snapshot.accountId or key
+        if not groups[id] then
+            groups[id]={peer=peers[key],source=snapshot,entries={}}; table.insert(order,id)
+        end
+        if snapshot and snapshot.accountId then groups[id].entries=C.AccountMerge(groups[id].entries,snapshot.entries) end
+    end
+    for _,id in ipairs(order) do
+        local group=groups[id]; local p=group.peer
+        local header=C.AccountRow(y,20)
+        header.lines[1]:SetTextColor(1,0.82,0)
+        header.lines[1]:SetText("Linked: " .. (p.peerLabel or p.peer)); header.lines[1]:Show()
+        y=y-22
+        for _,entry in ipairs(C.AccountLicenseOrder(group.entries)) do
+            local detail=C.AccountRaidLabels(entry,time())
+            local source=group.source
+            local model=C.CharacterLicenseRow(entry.name,entry,C.NormalHireCountForCharacter(EnsureDB().entries,entry.name),detail,source)
+
+            local row=C.DrawCharacterLicenseRow(model,y)
+            row:SetScript("OnClick",function()
+                SetStatus(model.title)
+            end)
+            y=y-model.height-2
+        end
+    end
+    return y
+end
+
+function C.PeerChooseKnown()
+    local names={}
+    for _,p in pairs(DB.peerLinks or {}) do
+        if p.realm==GetRealmName() and C.LinkKnown(DB.peerLinks,UnitName("player"),p.peer,p.realm) then names[p.peer]=p.peerLabel or p.peer end
+    end
+    for _,session in pairs(C.peerSessions or {}) do
+        local s=session.state
+        if s.realm==GetRealmName() and s.phase~="disabled" then names[s.peer]=s.peerLabel or s.peer end
+    end
+    local values={}; for _,name in pairs(names) do table.insert(values,name) end; table.sort(values)
+    if table.getn(values)==0 then C.peerPanel.knownButton.label:SetText("No known peers"); return end
+    local selected=1
+    for i,name in ipairs(values) do
+        if string.lower(name)==string.lower(C.peerPanel.nameInput:GetText()) then selected=i+1 end
+    end
+    if selected>table.getn(values) then selected=1 end
+    C.peerPanel.nameInput:SetText(values[selected])
+    C.peerPanel.knownButton.label:SetText("Peer " .. selected .. "/" .. table.getn(values) .. " >")
+    C.PeerRefresh()
+end
+
+-- Share only the current composition, addressed to existing linked endpoints.
+function C.PlanShareRows()
+    local f=C.planShareFrame
+    for i,button in ipairs(f.recipientButtons) do
+        local row=f.recipients[f.offset+i]
+        button.recipient=row
+        if row then
+            button.label:SetText((f.selected[row.key] and "[x] " or "[ ] ") .. row.label)
+            button:Show()
+        else button:Hide() end
+    end
+end
+
+function C.PlanCancelOutgoing()
+    local f=C.planShareFrame
+    if not f then return end
+    for key in pairs(f.selected or {}) do
+        local session=C.peerSessions and C.peerSessions[key]
+        if session then
+            C.SyncActivate(session); session.state.planOut=nil
+            if C.PlanParse(C.peerPending) then C.peerPending=nil end
+            C.SyncStore()
+        end
+    end
+end
+
+-- Share popup refresh: re-run the normal SRBLINK2 handshake for a saved approval
+-- whose live session expired. Entries are keyed by session and never send a plan.
+function C.PlanRefreshStart(row,link)
+    local entry={status="failed",label=row.label,started=GetTime()}
+    local previous=C.activeSession
+    local endpoint=C.PeerNew(UnitName("player"),link.peerLabel or link.peer,link.realm)
+    local session=endpoint and C.SyncSelect(endpoint,true)
+    local s=session and session.state
+    if not s then entry.reason="the link could not be prepared."
+    elseif not C.PeerContextOK() then entry.reason="the builder is busy."
+    elseif s.a and (s.phase=="waiting" or s.phase=="approval" or s.phase=="confirming" or s.phase=="confirm-sent") then
+        -- The same recipient's handshake is already running and belongs to someone else.
+        -- Observe it by nonce only: never restart, re-queue or cancel it.
+        entry.status="pending"; entry.a=s.a; entry.borrowed=true
+    elseif s.phase~="disabled" or C.peerPending then entry.status="busy"
+    else
+        s.remember=link.scope=="*"
+        local packet=C.LinkInvite(s,C.LinkNonce(),time(),GetTime())
+        if packet then
+            s.invitation=packet; C.PeerQueuePacket(packet)
+            entry.status="pending"; entry.a=s.a
+        else entry.reason="the invitation could not be created." end
+    end
+    if session then
+        C.SyncStore()
+        if previous and previous~=session then C.SyncActivate(previous) end
+    end
+    return entry
+end
+
+function C.PlanRefreshCancel(key,entry)
+    local session=C.peerSessions and C.peerSessions[key]; local s=session and session.state
+    if entry.borrowed or not s or s.a~=entry.a or s.phase=="linked" or s.phase=="disabled" then return end
+    local previous=C.activeSession
+    C.SyncActivate(session); C.PeerAbort("Share refresh cancelled"); C.SyncStore()
+    if previous and previous~=session then C.SyncActivate(previous) end
+end
+
+function C.PlanRefreshCancelAll(f)
+    for key,entry in pairs(f and f.refresh or {}) do
+        if entry.status=="pending" then C.PlanRefreshCancel(key,entry); entry.status="cancelled" end
+    end
+end
+
+function C.PlanRefreshPending(f)
+    for _,entry in pairs(f.refresh or {}) do
+        if entry.status=="pending" then return true end
+    end
+    return false
+end
+
+function C.PlanRefreshText(f)
+    local keys={}; for key in pairs(f.refresh or {}) do table.insert(keys,key) end; table.sort(keys)
+    local pending,ready,waiting=0,0,0; local notes=""
+    for _,key in ipairs(keys) do
+        local entry=f.refresh[key]
+        if entry.status=="pending" and entry.borrowed then waiting=waiting+1
+        elseif entry.status=="pending" then pending=pending+1
+        elseif entry.status=="ready" then ready=ready+1
+        elseif entry.status=="busy" then notes=notes .. "\n" .. entry.label .. " is busy with another exchange. Try again shortly."
+        elseif entry.status=="failed" then notes=notes .. "\nRefresh failed for " .. entry.label .. ": " .. (entry.reason or "no reply") end
+    end
+    if waiting>0 then
+        return "Waiting for " .. waiting .. " link exchange(s) already in progress; it is not restarted here.\nNothing is sent. Choose Send again once it is ready." .. (pending>0 and "\nRefreshing " .. pending .. " more link(s)." or "") .. notes
+    end
+    if pending>0 then
+        return "Refreshing " .. pending .. " link(s) through the normal handshake.\nNothing is sent until you choose Send." .. notes
+    end
+    local text="Refresh finished."
+    if ready>0 then text="Refreshed " .. ready .. " link(s); ready to send. Receiver chooses copy or merge." end
+    return text .. notes
+end
+
+function C.PlanRefreshTick(f)
+    local changed=false
+    C.SyncStore()
+    for key,entry in pairs(f.refresh) do
+        if entry.status=="pending" then
+            local session=C.peerSessions and C.peerSessions[key]; local s=session and session.state
+            if entry.borrowed and s and s.phase~="disabled" and s.a~=entry.a then
+                entry.status="failed"; entry.reason="the link exchange was replaced. Close and reopen Share to retry."
+            elseif not s then entry.status="failed"; entry.reason="the session was removed."
+            elseif s.phase=="linked" and C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) then
+                entry.status="ready"
+                for _,row in ipairs(f.recipients) do if row.key==key then row.available=true end end
+            elseif s.phase=="disabled" then entry.status="failed"; entry.reason=s.reason or "no reply."
+            elseif GetTime()<entry.started or GetTime()-entry.started>=65 then
+                C.PlanRefreshCancel(key,entry); entry.status="failed"; entry.reason="timed out. The other account may be offline or have SRB closed."
+            end
+            if entry.status~="pending" then changed=true end
+        end
+    end
+    if changed and not f.batches then f.message:SetText(C.PlanRefreshText(f)) end
+end
+
+function C.PlanSendCurrent()
+    local f=C.planShareFrame
+    if not f or not C.PeerContextOK() then return end
+    C.SyncStore()
+    local bank,name=C.PresetBank(DB,DB.uiMode)
+    if DB.uiMode~=f.mode or name~=f.name then f.message:SetText("Current plan changed. Close and open Share again."); return end
+    local wire=C.PlanEncode(bank[name],f.mode,name)
+    if not wire then f.message:SetText("Plan has unsupported names or exceeds the share limit."); return end
+    local batches={}; local total=0
+    for _,row in ipairs(f.recipients) do
+        if f.selected[row.key] then
+            local session=C.peerSessions and C.peerSessions[row.key]; local s=session and session.state
+            local entry=f.refresh and f.refresh[row.key]
+            if entry and entry.borrowed then
+                -- A borrowed observation only vouches for its own nonce, checked here
+                -- so a replaced handshake cannot slip through before the next tick.
+                if entry.status=="pending" and s and s.a==entry.a then f.message:SetText(C.PlanRefreshText(f)); return end
+                if entry.status~="ready" or not s or s.a~=entry.a then
+                    f.message:SetText("The link exchange this window was watching ended or was replaced.\nNothing was sent. Close and reopen Share to retry."); return
+                end
+            end
+            if not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) or s.planOut or session.pending then
+                f.message:SetText("Recipient unavailable or busy. Refresh Synchronization, then try again."); return
+            end
+            local packets=C.PlanPackets(s,wire,C.LinkNonce(),time(),GetTime())
+            if not packets then f.message:SetText("Link expires too soon. Refresh Synchronization, then try again."); return end
+            total=total+table.getn(packets); table.insert(batches,{state=s,packets=packets})
+        end
+    end
+    if table.getn(batches)<1 or table.getn(batches)>4 then f.message:SetText("Choose one to four linked accounts."); return end
+    for _,batch in ipairs(batches) do
+        if batch.state.expires-time()<total*0.25+10 then f.message:SetText("Too much data for this link. Send to fewer accounts after refreshing."); return end
+    end
+    for _,batch in ipairs(batches) do
+        batch.progress={nonce=C.PlanParse(batch.packets[1]).nonce,sent=0,total=table.getn(batch.packets)}
+        batch.state.planProgress=batch.progress; batch.state.planOut=batch.packets
+    end
+    f.batches=batches
+    f.message:SetText("Queued for receiver approval. Keep this window open.\nNo plan is activated or executed. Cancel stops unsent packets.")
+    f.sendButton:Disable()
+    for _,button in ipairs(f.recipientButtons) do button:Disable() end
+end
+
+-- Row click: toggles selection. In a multi-recipient popup, selecting a stale row
+-- starts the refresh for exactly that row.key; deselecting cancels only a refresh
+-- this click started. Never starts a send.
+function C.PlanToggleRecipient(row)
+    local f=C.planShareFrame
+    if not f or not row or not row.key then return end
+    f.selected[row.key]=not f.selected[row.key] or nil
+    local entry=f.refresh and f.refresh[row.key]
+    if table.getn(f.recipients)>1 then
+        if f.selected[row.key] then
+            if not row.available and not (entry and entry.status=="pending") and row.link then
+                entry=C.PlanRefreshStart(row,row.link); entry.owned=not entry.borrowed; f.refresh[row.key]=entry
+                if not f.batches then f.message:SetText(C.PlanRefreshText(f)) end
+            end
+        elseif entry and entry.owned and entry.status=="pending" then
+            C.PlanRefreshCancel(row.key,entry); entry.status="cancelled"
+            if not f.batches then f.message:SetText(C.PlanRefreshText(f)) end
+        end
+    end
+    C.PlanShareRows()
+end
+
+function C.OpenPlanShare()
+    C.PeerOnBuilderOpen()
+    if not C.PeerContextOK() then return end
+    local shown=C.planShareFrame
+    -- A repeated click while a send or refresh is in flight only raises the popup.
+    if shown and shown:IsShown() and (shown.batches or C.PlanRefreshPending(shown)) then shown:Raise(); return end
+    if not C.planShareFrame then
+        local f=CreateFrame("Frame","ShirsRaidBuilderPlanShare",UIParent); C.planShareFrame=f
+        f:SetWidth(550); f:SetHeight(390); f:SetPoint("CENTER",UIParent,"CENTER",0,0); StylePanelFrame(f)
+        f.title=MakeCaption(f,"",22,-18); f.title:SetWidth(506); f.title:SetHeight(36)
+        f.recipientButtons={}
+        for i=1,6 do
+            local button=MakeButton(f,"",506,22,-56-(i-1)*28,function()
+                local row=this.recipient
+                if row then C.PlanToggleRecipient(row) end
+            end)
+            table.insert(f.recipientButtons,button)
+        end
+        f.nextButton=MakeButton(f,"Next accounts",144,22,-230,function()
+            f.offset=f.offset+6; if f.offset>=table.getn(f.recipients) then f.offset=0 end; C.PlanShareRows()
+        end)
+        f.message=MakeCaption(f,"",22,-264); f.message:SetWidth(506); f.message:SetHeight(60); f.message:SetJustifyH("LEFT")
+        f.sendButton=MakeButton(f,"Send current plan",164,22,18,C.PlanSendCurrent,true)
+        f.cancelButton=MakeButton(f,"Cancel / close",144,200,18,function() f:Hide() end,true)
+        f:SetScript("OnHide",function() C.PlanCancelOutgoing(); C.PlanRefreshCancelAll(f) end)
+    end
+    local f=C.planShareFrame; C.PlanCancelOutgoing()
+    local _,name=C.PresetBank(DB,DB.uiMode); f.name=name; f.mode=DB.uiMode
+    f.selected={}; f.recipients={}; f.offset=0; f.batches=nil
+    for _,button in ipairs(f.recipientButtons) do button:Enable() end
+    local grouped={}; local keys={}
+    for _,p in pairs(DB.peerLinks or {}) do
+        if p.realm==GetRealmName() and C.LinkKnown(DB.peerLinks,UnitName("player"),p.peer,p.realm) then
+            local key=p.realm .. ";" .. p.peer
+            keys[key]=p
+        end
+    end
+    local ordered={}; for key in pairs(keys) do table.insert(ordered,key) end; table.sort(ordered)
+    for _,key in ipairs(ordered) do
+        local p=keys[key]; local snapshot=C.remoteLicenses and C.remoteLicenses[key]
+        local id=snapshot and snapshot.accountId or key
+        local session=C.peerSessions and C.peerSessions[key]
+        local available=session and C.PlanAuthorized(session.state,DB.peerLinks,time(),GetTime())
+        local row={key=key,label=(p.peerLabel or p.peer) .. " / " .. p.realm,available=available,link=p}
+        if not grouped[id] then grouped[id]=row; table.insert(f.recipients,row)
+        elseif available and not grouped[id].available then
+            grouped[id].key=row.key; grouped[id].label=row.label; grouped[id].available=true; grouped[id].link=p
+        end
+    end
+    f.refresh={}
+    -- One recipient is unambiguous, so refresh it on open. With several, refresh
+    -- only the row the user selects (see C.PlanToggleRecipient).
+    if table.getn(f.recipients)==1 then
+        local row=f.recipients[1]
+        if not row.available then f.refresh[row.key]=C.PlanRefreshStart(row,row.link) end
+    end
+    f.title:SetText("Share current " .. f.mode .. " plan: " .. name)
+    if next(f.refresh) then f.message:SetText(C.PlanRefreshText(f))
+    else f.message:SetText("Choose linked accounts. Composition only; no deny/setup settings.\nBoth accounts must refresh first. Receiver chooses copy or merge.") end
+    f.sendButton:Enable(); C.PlanShareRows(); f:Show(); f:Raise()
+    EnsureEscapeWatcher(); escapeFrame:Show()
+end
+
+function C.PlanReceiveChoice(action)
+    local f=C.planReceiveFrame; local s=f and f.session and f.session.state
+    if not s or not C.PeerContextOK() or s.you~=string.lower(UnitName("player") or "") or s.realm~=GetRealmName() then return end
+    local destination=C.Trim(f.destination:GetText())
+    local ok,result=C.PlanImport(DB,s,DB.peerLinks,destination,action,time(),GetTime())
+    if ok then
+        f:Hide(); RefreshPresetButton()
+        local report="Raid plan saved to " .. destination .. ": " .. result.added .. " added, " .. result.moved .. " moved to free slots. Select it yourself; nothing was executed."
+        SetStatus(report); Chat(report)
+    else
+        local reasons={
+            exists="a plan with this name exists. Copy needs a new name.",
+            missing="no existing plan with this name to merge into.",
+            capacity="not enough free slots for the moved rows. The plan was left unchanged.",
+            destination="invalid destination name.",
+            unauthorized="the link expired or was revoked.",
+            proposal="the offer is no longer available.",
+            invalid="the received plan is invalid.",
+            action="unknown approval choice.",
+        }
+        f.message:SetText("Not imported: " .. (reasons[result] or "the local database is unavailable."))
+    end
+end
+
+function C.PlanPromptTick()
+    local outgoing=C.planShareFrame
+    if outgoing and outgoing:IsShown() and outgoing.refresh then C.PlanRefreshTick(outgoing) end
+    if outgoing and outgoing:IsShown() and outgoing.batches then
+        local complete=true; local stopped=false
+        C.SyncStore()
+        for _,batch in ipairs(outgoing.batches) do
+            if batch.progress.sent~=batch.progress.total then
+                complete=false
+                if batch.state.phase~="linked" then stopped=true end
+            end
+        end
+        if complete then
+            outgoing.message:SetText("Submitted to the whisper service. Delivery and approval are unconfirmed.\nYou can close this window. The receiver must approve the copy.")
+            outgoing.batches=nil
+        elseif stopped then
+            outgoing.message:SetText("Transfer stopped or expired. Receipt is unconfirmed.\nRefresh Synchronization and send again if needed.")
+            outgoing.batches=nil
+        end
+    end
+    local f=C.planReceiveFrame
+    if f and f:IsShown() then
+        local s=f.session and f.session.state
+        if not C.PeerContextOK() or not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) or not s.planProposal then f:Hide() end
+        return
+    end
+    if not C.PeerContextOK() then return end
+    for _,key in ipairs(C.SyncKeys()) do
+        local session=C.peerSessions[key]; local s=session.state
+        if s.planProposal and C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) then
+            if not f then
+                f=CreateFrame("Frame","ShirsRaidBuilderPlanReceive",UIParent); C.planReceiveFrame=f
+                f:SetWidth(590); f:SetHeight(290); f:SetPoint("CENTER",UIParent,"CENTER",0,70); StylePanelFrame(f)
+                f.title=MakeCaption(f,"",22,-20); f.title:SetWidth(546); f.title:SetHeight(54); f.title:SetJustifyH("LEFT")
+                MakeCaption(f,"Destination plan name (same Hire / Sort bank)",22,-82)
+                f.destination=MakeInput(f,360,22,-104,"")
+                f.message=MakeCaption(f,"",22,-144); f.message:SetWidth(546); f.message:SetHeight(74); f.message:SetJustifyH("LEFT")
+                f.copyButton=MakeButton(f,"Approve new copy",164,22,18,function() C.PlanReceiveChoice("copy") end,true)
+                f.mergeButton=MakeButton(f,"Approve merge",164,198,18,function() C.PlanReceiveChoice("merge") end,true)
+                f.rejectButton=MakeButton(f,"Reject",110,374,18,function() f:Hide() end,true)
+                f:SetScript("OnHide",function() C.PlanReject(f.session and f.session.state); f.session=nil end)
+            end
+            f.session=session
+            f.title:SetText(s.peerLabel .. " / " .. s.realm .. " sent a " .. s.planProposal.plan.mode .. " plan:\n" .. s.planProposal.plan.name)
+            f.destination:SetText("")
+            f.message:SetText("Copy requires a new name. Merge into an existing plan keeps its occupied slots;\nincoming rows for occupied slots move to the first free slots.\nIf free slots run out, nothing is imported. Settings stay local.\nNo activation, hiring, sorting or commands. Reject discards this offer.")
+            f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetFrameLevel(150); f:Show(); f:Raise()
+            for _,control in ipairs({f.dragBar,f.destination,f.copyButton,f.mergeButton,f.rejectButton}) do
+                control:SetFrameStrata("FULLSCREEN_DIALOG"); control:SetFrameLevel(151)
+            end
+            return
+        end
+    end
+end
+
+-- Durable handoffs carry a frozen board and its plan's own commands, never other local settings.
+-- It runs every frame through HandTick, so it only binds the saved table: the full repair
+-- pass (EnsureDB) rebuilt every board slot each frame. Load and edits still run it.
+function C.HandStore()
+    if DB~=ShirsRaidBuilderDB or type(DB.presets)~="table" then EnsureDB() end
+    if type(DB.handoff)~="table" then DB.handoff={} end
+    if not C.handRestored then
+        C.handRestored=true
+        if DB.handoff.active then
+            local h=C.HandRestore(DB.handoff.active,UnitName("player"),GetRealmName(),time())
+            DB.handoff.active=h
+        end
+    end
+    return DB.handoff
+end
+
+function C.HandStatus(text)
+    C.handNotice=text
+    if C.handFrame then C.handFrame.message:SetText(text) end
+    SetStatus(text)
+end
+
+-- This account's own characters, freshly collected: lower-case name -> true.
+function C.HandOwn()
+    local own={}
+    for _,row in ipairs(C.AccountReadLocal()) do own[string.lower(row.name)]=true end
+    return own
+end
+
+function C.HandStartHire()
+    if executing or DB.uiMode=="sort" then return end
+    local h=C.HandStore().active
+    if h and h.phase~="done" and h.phase~="cancelled" then C.HandStatus("A process is already active or paused. Inspect sent hires, then Cancel process in Hire status before starting another."); return end
+    local plan=EnsureDB(); local own=C.HandOwn()
+    -- Live sessions are read once here, before actors freeze; the run never re-resolves them.
+    local sources=C.HandRemoteSources(C.remoteLicenses,DB.peerLinks,UnitName("player"),GetRealmName(),C.peerSessions,time(),GetTime())
+    local actors,remote,conflict,unclear,unknownLegacy=C.HandActors(plan,UnitName("player"),own,sources)
+    if unclear then C.HandStatus("Group " .. conflict .. ": " .. unclear .. " is listed by more than one account or linked character. Fix links or the board before Execute."); return end
+    if not actors then C.HandStatus("Board hire-from identity is unclear or invalid. Fix the board before Execute; nothing was sent."); return end
+    if not remote then C.whisperRun=nil; ExecuteQueue(); return end
+    h=C.HandCreate(plan,DB.currentPreset,UnitName("player"),GetRealmName(),actors,C.LinkNonce(),time(),own,sources,true)
+    if not h then C.HandStatus("Board hire-from identity is unclear or invalid. Fix the board before Execute; nothing was sent."); return end
+    -- Split groups never raise the four-hire limit: the whole frozen plan is checked once,
+    -- before any authority, grant or hire.
+    local over=C.OverLimitHireCharacter(h.plan.entries,4)
+    if over then C.HandStatus(over .. " has more than four normal hires in this plan. Remove extras before Execute; nothing was sent."); return end
+    for _,row in ipairs(h.steps) do
+        if string.lower(row.actor)~=string.lower(UnitName("player")) and not C.LinkKnown(DB.peerLinks,UnitName("player"),row.actor,h.realm) then C.HandStatus("Link " .. row.actor .. " before Execute."); return end
+    end
+    h.kind="GRANT"; h.accounts={}; h.expires=time()+7200
+    for i,row in ipairs(h.steps) do
+        if string.lower(row.actor)==string.lower(UnitName("player")) then h.accounts[i]=DB.syncAccountId
+        else
+            local r=C.remoteLicenses and C.remoteLicenses[h.realm .. ";" .. string.lower(row.actor)]
+            h.accounts[i]=r and r.accountId
+        end
+        if not C.AccountIdentity(h.accounts[i]) then C.HandStatus("Synchronize " .. row.actor .. " before Execute; its account identity is unavailable."); return end
+    end
+    if not C.HandEncode(h) then C.HandStatus("Board hire-from identity is unclear or invalid. Fix the board before Execute; nothing was sent."); return end
+    -- The plan's own rules and legacy commands go with the run, so every account applies
+    -- this plan, never the profile it happens to have open.
+    h.extras=C.HandExtras(plan)
+    if not h.extras then C.HandStatus("A rule or legacy command in this plan has text a linked account cannot receive. Edit it, then Execute again; nothing was sent."); return end
+    if not C.HandEncode(h) then C.HandStatus("This plan's rules and legacy commands are too long to send to a linked account. Remove some, then Execute again; nothing was sent."); return end
+    -- A legacy character no account list names follows its group's account; say so.
+    if unknownLegacy and table.getn(unknownLegacy)>0 then
+        Chat("No account lists legacy " .. table.concat(unknownLegacy, ", ") .. "; its group's account will hire it. If it belongs to a linked account, Refresh Synchronization first.")
+    end
+    C.HandStore().active=h; C.handAuthority=C.HandRunScope(h)
+    -- Board order is kept: a linked account's first group is granted before any local spend.
+    if string.lower(h.steps[1].actor)==string.lower(UnitName("player")) then C.HandExecuteLocal()
+    else h.phase="waiting"; h.updated=time(); C.HandSendLocal() end
+end
+
+function C.HandLocalPlan()
+    local h=C.HandStore().active
+    if executing or (C.sortFrame and C.sortFrame.busy) then return nil end
+    if not h or h.realm~=GetRealmName() or time()>=h.expires then return nil end
+    -- A run carrying its plan's commands needs nothing from the open profile, so the
+    -- builder's mode does not matter. An older run reads the open hire profile's rules,
+    -- which Sort mode would replace with the sort profile.
+    if DB.uiMode=="sort" and not h.extras then return nil end
+    if h.source and not C.LinkKnown(DB.peerLinks,UnitName("player"),h.source,h.realm) then return nil end
+    local plan=C.HandStepPlan(h,EnsureDB(),UnitName("player"),C.HandOwn())
+    if plan then for i=1,40 do if not plan.entries[i] then plan.entries[i]={kind="empty"} end end end
+    return plan
+end
+
+function C.HandExecuteLocal()
+    if not mainFrame or not mainFrame:IsShown() then return end
+    C.HandRunStep()
+end
+
+-- Already-approved work this client did not start is refused one way: execution authority
+-- ends, the reason stays visible, and a participant's leader gets one PAUSE bound to this
+-- exact run step, sent under a notice scope that is never execution authority.
+function C.HandRefuse(text)
+    local h=C.HandStore().active
+    C.HandPause(text)
+    if h and h.kind=="GRANT" and string.lower(h.origin)~=string.lower(UnitName("player")) then
+        C.handNotify={scope=C.HandRunScope(h),text=text}; C.HandSendLocal()
+    end
+end
+
+function C.HandRunStep()
+    local active=C.HandStore().active
+    if active and active.kind and C.handAuthority~=C.HandRunScope(active) then C.HandStatus("Run authorization expired or was lost on reload. Check sent hires and Cancel before a new Execute."); return end
+    local plan=C.HandLocalPlan()
+    if not plan and not (active and active.kind) then C.HandStatus("No ready local step for this character. Nothing was sent."); return end
+    -- Authorized work that cannot start (a hire-from character not on this account, failed
+    -- validation, or a queue that did not start) is refused before any command is sent.
+    if not plan then C.HandRefuse("Paused: this character cannot run its granted group; a hire-from character is not on this account, or the run is busy or expired. No hires were sent."); return end
+    -- Deny commands are checked for this chunk; the four-hire limit holds for the whole
+    -- frozen plan, so trusted input split into small chunks can never raise it.
+    local errorText=C.DenyQueueError(C.HandQueue(plan)); local over=C.OverLimitHireCharacter(active.plan.entries,4)
+    if errorText then C.HandRefuse("Paused before any hire: " .. errorText); return end
+    if over then C.HandRefuse("Paused: " .. over .. " has more than four normal hires in this run. No hires were sent."); return end
+    local h=C.HandStore().active
+    h.phase="running"; h.updated=time(); C.handRunPlan=plan; C.whisperRun=nil
+    ExecuteQueue()
+    -- Already finished with no commands and advanced (possibly into the next group).
+    if C.handRunPlan~=plan then return end
+    if not executing then C.handRunPlan=nil; C.HandRefuse("Paused: this group's queue did not start. No hires were sent."); return end
+    C.HandStatus("Local group started. Normal submission advances automatically; server results remain unverified.")
+end
+
+function C.HandSendLocal()
+    if not C.PeerContextOK() then C.HandStatus("Handoff paused. Wait for the local queue, then recover."); return end
+    local h=C.HandStore().active
+    -- Execution authority sends GRANT/REPORT; a refusal notice for the same exact run
+    -- scope, held only without authority, sends nothing but that step's PAUSE.
+    local scope=C.HandRunScope(h)
+    local notice=C.handNotify
+    local refused=scope~=nil and notice~=nil and notice.scope==scope and C.handAuthority==nil
+    if not h or h.realm~=GetRealmName() or time()>=h.expires or (h.kind and C.handAuthority~=scope and not refused) then return end
+    local wire,target=C.HandOutgoing(h,UnitName("player"),refused)
+    if not wire then return end
+    -- A REPORT, and a GRANT to an account that has reported in this run, go short: the
+    -- receiver holds the run. A PAUSE ends the run and stays whole.
+    local out=C.HandDecode(wire)
+    local holds=C.handHolders and C.handHolders[h.id] and C.handHolders[h.id][string.lower(target)]
+    if out and (out.kind=="REPORT" or (out.kind=="GRANT" and holds)) then wire=C.HandShort(out) or wire end
+    local endpoint=C.PeerNew(UnitName("player"),target,h.realm)
+    if not endpoint or not C.SyncSelect(endpoint,true) then C.HandStatus("Handoff paused: linked endpoint unavailable."); return end
+    local s=C.peerState
+    local packets=C.HandPackets(s,wire,C.LinkNonce(),time(),GetTime())
+    if not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) or not packets then
+        if not C.LinkKnown(DB.peerLinks,s.you,s.peer,s.realm) then C.HandStatus("Handoff paused: peer approval is missing."); return end
+        if C.handAwaitLink then return end
+        if s.phase=="linked" then C.PeerAbort("Refreshing trusted handoff link"); C.SyncStore() end
+        local key=endpoint.realm .. ";" .. endpoint.peer
+        local link=DB.peerLinks[C.LinkKey(s.you,s.peer,s.realm,true)] or DB.peerLinks[C.LinkKey(s.you,s.peer,s.realm,false)]
+        if not link then C.HandPause("Handoff paused: remembered link unavailable."); return end
+        local row={key=key,label=target}
+        local entry=C.PlanRefreshStart(row,link)
+        C.handAwaitLink={id=h.id,step=h.step,refresh={[key]=entry},recipients={row},message={SetText=function() end},deadline=GetTime()+65}
+        C.HandStatus("Refreshing the trusted live link for automatic handoff."); return
+    end
+    if s.handOut or C.peerPending or (s.handProgress and s.handProgress.sent<s.handProgress.total and s.handProgress.expires>time()) then C.HandStatus("Transfer already pending. Wait, or cancel before retrying."); return end
+    local nonce=C.HandParse(packets[1]).nonce
+    s.handOut=packets; s.handProgress={nonce=nonce,sent=0,total=table.getn(packets),expires=s.expires}
+    C.handTransfer={state=s,progress=s.handProgress,kind=refused and "PAUSE" or (h.origin==UnitName("player") and "GRANT" or "REPORT"),
+        target=target,note=refused and notice.text or nil}; C.SyncStore()
+    if h.kind=="GRANT" and string.lower(h.origin)==string.lower(UnitName("player")) then C.handReportDeadline=GetTime()+600 end
+    if refused then C.HandStatus(notice.text .. " Telling " .. target .. ".")
+    else C.HandStatus("Authorized handoff queued. Server results are unverified.") end
+end
+
+function C.HandCancelLocal()
+    local store=C.HandStore(); local h=store.active
+    if C.handRunPlan then StopQueue() end
+    if h then
+        h.phase="cancelled"; store.seen=store.seen or {}; store.seen[h.id]={step=h.step,expires=h.expires,cancelled=true}
+    end
+    for _,session in pairs(C.peerSessions or {}) do
+        session.state.handOut=nil; session.state.handProposal=nil; session.state.handInput=nil
+        if C.HandParse(session.pending) then session.pending=nil end
+    end
+    if C.HandParse(C.peerPending) then C.peerPending=nil end
+    C.handTransfer=nil; C.HandStatus("Cancelled locally. Already delivered steps on other accounts need local cancellation there too.")
+    if C.handAwaitLink then C.PlanRefreshCancelAll(C.handAwaitLink) end
+    C.handAwaitLink=nil; C.handAuthority=nil; C.handReportDeadline=nil; C.handNotify=nil
+end
+
+function C.HandApproveLocal()
+    local f=C.handReceiveFrame; local s=f and f.session and f.session.state
+    if not f or not f:IsShown() or not C.PeerContextOK() or not C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) or not s.handProposal then return end
+    local h=C.HandDecode(s.handProposal.wire)
+    if not C.HandApprove(C.HandStore(),h,s.peer,UnitName("player"),GetRealmName(),time()) then f.message:SetText("Rejected: duplicate, stale, conflicting, expired or wrong-actor process."); return end
+    f:Hide(); C.HandStatus("Approved and saved. Open /srbhandoff, Preview, then Execute locally. Nothing was executed.")
+end
+
+function C.HandPause(text)
+    C.handAuthority=nil; C.handReportDeadline=nil; C.handNotify=nil
+    if C.handAwaitLink then C.PlanRefreshCancelAll(C.handAwaitLink) end
+    C.handAwaitLink=nil; C.handTransfer=nil
+    for _,session in pairs(C.peerSessions or {}) do
+        session.state.handOut=nil; session.state.handProposal=nil; session.state.handInput=nil
+        if C.HandParse(session.pending) then session.pending=nil end
+    end
+    if C.HandParse(C.peerPending) then C.peerPending=nil end
+    local h=C.HandStore().active
+    if C.handRunPlan then StopQueue() end
+    if h then h.phase="interrupted" end
+    C.HandStatus(text)
+end
+
+function C.HandTick()
+    local active=C.HandStore().active
+    if C.handAuthority and active and (active.realm~=GetRealmName() or time()>=active.expires
+        or (C.handReportDeadline and GetTime()>=C.handReportDeadline)) then
+        C.HandPause("Process timed out. Check submitted hires before starting another run.")
+    end
+    local wait=C.handAwaitLink
+    if wait then
+        local h=C.HandStore().active
+        C.PlanRefreshTick(wait)
+        if not h or h.id~=wait.id or h.step~=wait.step or GetTime()>=wait.deadline then
+            C.HandPause("Automatic handoff stopped. Check submitted hires; no hires will retry.")
+        elseif not C.PlanRefreshPending(wait) then
+            local ready=true; for _,entry in pairs(wait.refresh) do if entry.status~="ready" then ready=false end end
+            C.handAwaitLink=nil
+            local target=wait.recipients and wait.recipients[1] and wait.recipients[1].label or "The linked account"
+            local lead=h and string.lower(h.origin or "")==string.lower(UnitName("player") or "")
+            if ready then C.HandSendLocal()
+            else C.HandPause("Paused: " .. target .. " did not answer, so nothing more was sent." .. (lead and " If that account is on another character, Refresh Synchronization, cancel this process and Execute again." or "")) end
+        end
+    end
+    if C.PeerContextOK() then
+        for _,key in ipairs(C.SyncKeys()) do
+            local session=C.peerSessions[key]; local s=session.state
+            if s.handProposal and C.PlanAuthorized(s,DB.peerLinks,time(),GetTime()) then
+                local old=C.HandStore().active
+                local h=C.HandDecode(s.handProposal.wire) or C.HandExpand(s.handProposal.wire,old)
+                local claim=C.remoteLicenses and C.remoteLicenses[s.realm .. ";" .. s.peer]
+                -- Answers bind only to a GRANT run this leader holds real authority for, so a
+                -- plain, foreign or unauthorized run is never indexed, moved or paused.
+                local held=old and old.kind=="GRANT" and C.handAuthority~=nil and C.handAuthority==C.HandRunScope(old)
+                if h and h.kind=="REPORT" then
+                    if held and claim and claim.accountId==old.accounts[old.step]
+                        and C.HandReport(old,h,s.peer,UnitName("player"),GetRealmName(),time()) then
+                        C.handReportDeadline=nil
+                        C.handHolders=C.handHolders or {}; C.handHolders[old.id]=C.handHolders[old.id] or {}
+                        C.handHolders[old.id][string.lower(s.peer)]=true
+                        if old.phase=="ready" then C.HandRunStep()
+                        elseif old.phase=="waiting" then C.HandSendLocal()
+                        else C.handAuthority=nil; C.HandStatus("Process submitted. Check server results; no further group will run.") end
+                    else C.HandStatus("Report rejected: wrong account, step or run.") end
+                elseif h and h.kind=="PAUSE" then
+                    -- A refusal only pauses this leader's exact waiting step: no advance, skip or regrant.
+                    if held and claim and claim.accountId==old.accounts[old.step]
+                        and C.HandRefusal(old,h,s.peer,UnitName("player"),GetRealmName(),time()) then
+                        C.HandPause("Paused: " .. old.steps[old.step].actor .. " could not run or finish its granted group; its chat says why. No further group will run; check submitted hires, then Cancel process before Execute.")
+                    else C.HandStatus("Pause rejected: wrong account, step or run.") end
+                elseif h and h.kind=="GRANT" then
+                    if not executing and claim and C.HandGrantBound(h,s.peer,UnitName("player"),DB.syncAccountId,claim.accountId)
+                        and C.HandApprove(C.HandStore(),h,s.peer,UnitName("player"),GetRealmName(),time()) then
+                        C.handAuthority=C.HandRunScope(h); C.HandRunStep()
+                    else C.HandStatus("Authorization rejected: duplicate, stale, busy, conflicting or wrong account.") end
+                elseif h and not h.kind and C.HandApprove(C.HandStore(),h,s.peer,UnitName("player"),GetRealmName(),time()) then
+                    C.HandStatus("Legacy handoff saved without execution authority. No hires sent.")
+                else C.HandStatus("Handoff rejected: duplicate, stale, conflicting, expired or wrong actor.") end
+                s.handProposal=nil; s.handInput=nil
+            end
+        end
+    end
+    local out=C.handTransfer
+    if out then
+        if out.progress.sent==out.progress.total then
+            C.handTransfer=nil
+            if out.kind=="PAUSE" then
+                C.handNotify=nil
+                C.HandStatus(out.note .. " The pause was submitted to " .. out.target .. "; delivery is unverified.")
+            else
+                C.HandStatus("Handoff submitted. Waiting for the authorized group's submission; server results remain unverified.")
+                if out.kind=="REPORT" then C.handAuthority=nil end
+            end
+        elseif out.state.phase~="linked" or time()>=out.progress.expires then C.HandPause("Transfer stopped or timed out. Check sent hires before recovery; no automatic replay.")
+        elseif out.shown~=out.progress.sent then
+            out.shown=out.progress.sent; C.HandStatus("Handoff packets " .. out.progress.sent .. "/" .. out.progress.total .. ".")
+        end
+    end
+    -- The progress line is rebuilt only when the run, its step or phase, or expiry changes.
+    local f=C.handFrame
+    if f and f:IsShown() then
+        local h=C.HandStore().active
+        local expired=h and time()>=h.expires
+        if not f.drawn or f.drawnRun~=h or f.drawnStep~=(h and h.step) or f.drawnPhase~=(h and h.phase) or f.drawnExpired~=expired then
+            f.drawn=true; f.drawnRun=h; f.drawnStep=h and h.step; f.drawnPhase=h and h.phase; f.drawnExpired=expired
+            local row=h and h.steps[h.step]
+            local slots=row and row.first and (" slots " .. row.first .. "-" .. row.last) or ""
+            f.progress:SetText(h and (h.name .. " | " .. h.phase .. " | Step " .. h.step .. "/" .. table.getn(h.steps) .. (row and (row.group==0 and (" | Commands: " .. row.actor) or (" | Group " .. row.group .. slots .. ": " .. row.actor)) or "") .. (expired and " | EXPIRED" or "")) or "No active process")
+        end
+    end
+end
+
+function C.OpenHandoff()
+    C.PeerOnBuilderOpen(); C.HandStore()
+    if not C.handFrame then
+        local f=CreateFrame("Frame","ShirsRaidBuilderHandoff",UIParent); C.handFrame=f
+        -- Status only: the board names each group's account and one Hire Execute runs it.
+        f:SetWidth(630); f:SetHeight(250); f:SetPoint("CENTER",UIParent,"CENTER",0,0); StylePanelFrame(f)
+        f:SetFrameStrata("FULLSCREEN_DIALOG"); f:SetToplevel(true)
+        MakeCaption(f,"Hire status",22,-20)
+        f.progress=MakeCaption(f,"",22,-54); f.progress:SetWidth(580); f.progress:SetHeight(44); f.progress:SetJustifyH("LEFT")
+        f.message=MakeCaption(f,"",22,-104); f.message:SetWidth(580); f.message:SetHeight(76); f.message:SetJustifyH("LEFT")
+        f.cancelButton=MakeButton(f,"Cancel process",150,22,18,C.HandCancelLocal,true)
+        f.stopButton=MakeButton(f,"Stop execution",150,184,18,StopQueue,true)
+        f.closeButton=MakeButton(f,"Close",110,346,18,function() f:Hide() end,true)
+    end
+    C.handFrame:Show(); C.handFrame:Raise(); C.HandStatus(C.handNotice or "One Hire Execute runs the prepared plan. Linked accounts run their own hires automatically, in board order, after each prior step is submitted."); C.HandTick()
+end
+
+SLASH_SHIRSRAIDBUILDERHANDOFF1="/srbhandoff"
+SlashCmdList["SHIRSRAIDBUILDERHANDOFF"]=C.OpenHandoff
+
+function C.OpenPeerPOC()
+    C.PeerOnBuilderOpen()
+    if not C.peerPanel then
+        local f=CreateFrame("Frame","ShirsRaidBuilderPeerPOC",UIParent); C.peerPanel=f
+        f:SetWidth(570); f:SetHeight(484); f:SetPoint("CENTER",UIParent,"CENTER",0,0); StylePanelFrame(f)
+        MakeCaption(f,"Link another account",22,-14)
+        MakeButton(f,"X",22,526,-8,function() f:Hide() end)
+        MakeCaption(f,"Known character on this realm",22,-44)
+        f.nameInput=MakeInput(f,220,28,-64,"")
+        f.nameInput:SetScript("OnTextChanged",function()
+            C.PeerRefresh()
+        end)
+        f.knownButton=MakeButton(f,"Next known peer",160,380,-36,C.PeerChooseKnown)
+        f.pairButton=MakeButton(f,"Pair",100,270,-64,C.LinkPair)
+        f.rememberCheck=CreateFrame("CheckButton",nil,f,"UICheckButtonTemplate")
+        f.rememberCheck:SetWidth(20); f.rememberCheck:SetHeight(20); f.rememberCheck:SetPoint("TOPLEFT",f,"TOPLEFT",22,-100)
+        MakeCaption(f,"Remember this link for all characters on this account",48,-104)
+        f.status=MakeCaption(f,"",22,-136); f.status:SetWidth(526); f.status:SetHeight(186); f.status:SetJustifyH("LEFT"); f.status:SetJustifyV("TOP")
+        f.licenseButton=MakeButton(f,"Read peer licenses",160,380,-64,C.LicenseRefreshRemote)
+        f.forgetButton=MakeButton(f,"Unlink character",144,22,-364,function() C.LinkForgetVisible(false) end)
+        f.forgetAccountButton=MakeButton(f,"Forget account link",164,176,-364,function() C.LinkForgetVisible(true) end)
+        f.cancelButton=MakeButton(f,"Cancel",100,350,-364,function()
+            local endpoint=C.PeerVisibleEndpoint()
+            if endpoint then C.SyncSelect(endpoint,false); C.PeerAbort("Cancelled locally; the peer will time out") end
+        end)
+        local help=MakeCaption(f,"Licenses are peer claims, not ownership proof. Accepting a link\nallows plan-scoped hiring and gold spending after Execute on the\ninitiating account. Opening SRB does not sync; use Refresh\nSynchronization to retry. Both peers need this version.",22,-408)
+        help:SetWidth(526); help:SetHeight(56); help:SetJustifyH("LEFT")
+        f:SetScript("OnHide",function()
+            CloseChoiceMenu()
+            local endpoint=C.PeerVisibleEndpoint()
+            if not endpoint then return end
+            -- Like builder close: established links survive; only pending pairing is cancelled.
+            local session=C.SyncSelect(endpoint,false)
+            if session and session.state.phase=="linked" then return end
+            C.PeerAbort("Link panel closed; peer will time out")
+        end)
+        if C.peerState then
+            C.linkUpdating=true; f.nameInput:SetText(C.peerState.peerLabel or C.peerState.peer); C.linkUpdating=nil
+        elseif C.peerDraft then f.nameInput:SetText(C.peerDraft)
+        end
+    end
+    C.peerPanel:Show(); EnsureEscapeWatcher(); escapeFrame:Show(); C.PeerRefresh()
+end
+
+SLASH_SHIRSRAIDBUILDERPEER1 = "/srbpeer"
+SlashCmdList["SHIRSRAIDBUILDERPEER"] = C.OpenPeerPOC
+
 local function CreateMain()
     EnsureDB()
     mainFrame=CreateFrame("Frame","ShirsRaidBuilderMainFrame",UIParent); mainFrame:SetWidth(780); mainFrame:SetHeight(640); mainFrame:SetPoint("CENTER",UIParent,"CENTER",0,0); mainFrame:SetFrameStrata("FULLSCREEN"); mainFrame:SetToplevel(true); mainFrame:SetMovable(true); mainFrame:EnableMouse(true); mainFrame:RegisterForDrag("LeftButton"); mainFrame:SetScript("OnDragStart",function() mainFrame:StartMoving() end); mainFrame:SetScript("OnDragStop",function() mainFrame:StopMovingOrSizing() end)
     mainFrame:SetBackdrop(PANEL_BG); mainFrame:SetBackdropColor(0.03, 0.04, 0.07, 1.0); mainFrame:SetBackdropBorderColor(0.70, 0.70, 0.70, 1.0)
-    local title=mainFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOP",mainFrame,"TOP",0,-12); title:SetText("Shir's Raid Builder " .. C.VERSION)
+    local title=mainFrame:CreateFontString(nil,"OVERLAY","GameFontHighlight"); title:SetPoint("TOPLEFT",mainFrame,"TOPLEFT",310,-32); title:SetText("Shir's Raid Builder " .. C.VERSION)
     mainFrame.titleText = title
     MakeButton(mainFrame,"X",22,736,-8,function() mainFrame:Hide() end)
-    local drag=CreateFrame("Frame",nil,mainFrame); drag:SetWidth(500); drag:SetHeight(24); drag:SetPoint("TOP",mainFrame,"TOP",0,-4); drag:EnableMouse(true); drag:SetScript("OnMouseDown",function() mainFrame:StartMoving() end); drag:SetScript("OnMouseUp",function() mainFrame:StopMovingOrSizing() end)
+    MakeButton(mainFrame,"Link Account",100,22,-8,C.OpenPeerPOC)
+    mainFrame.syncButton=MakeButton(mainFrame,"Refresh Synchronization",174,128,-8,C.SyncRefreshAll)
+    mainFrame.groupActorsBtn=C.SetTip(MakeButton(mainFrame,"Hire status",100,310,-8,C.OpenHandoff),"Hire status","Shows the running Hire process. Cancel process discards groups not yet sent; a group already delivered to another account finishes there.")
+    local drag=CreateFrame("Frame",nil,mainFrame); mainFrame.titleDrag=drag; drag:SetWidth(90); drag:SetHeight(24); drag:SetPoint("TOPLEFT",mainFrame,"TOPLEFT",414,-4); drag:EnableMouse(true); drag:SetScript("OnMouseDown",function() mainFrame:StartMoving() end); drag:SetScript("OnMouseUp",function() mainFrame:StopMovingOrSizing() end)
     MakeCaption(mainFrame, "Profile", 22, -32)
     presetButton=SelectButton(mainFrame,GetPresetNames(),DB.currentPreset,140,22,-48,function(v) SwitchPreset(v) end)
     C.SetTip(presetButton,"Profile","Hire mode and sort mode each have their own saved profiles.")
+    mainFrame.shareButton=C.SetTip(MakeButton(mainFrame,"Share Current Plan",132,510,-8,C.OpenPlanShare),"Share Current Plan","Send the open plan to linked accounts. The receiver must approve a copy or merge; nothing is executed.")
     C.SetTip(MakeButton(mainFrame,"Import",76,648,-8,C.OpenPresetImport),"Import","Copy a saved profile into the current profile. Hire and sort profiles stay separate.")
     C.SetTip(MakeButton(mainFrame,"New",88,168,-48,NewPreset),"New","Create an empty profile in the current mode.")
     C.SetTip(MakeButton(mainFrame,"Rename",88,260,-48,RenamePreset),"Rename","Rename the open profile. Does not copy it.")
@@ -3147,6 +5095,7 @@ local function CreateMain()
     mainFrame.saveBtn=C.SetTip(MakeButton(mainFrame,"Save",88,536,-48,C.SaveSortLayout),"Save","Save this sort layout in the addon under a name. Does not move anyone in the raid.")
     mainFrame.saveBtn.homeX=536; mainFrame.saveBtn.homeY=-48
     mainFrame.modeBtn=C.SetTip(MakeButton(mainFrame,"Sort Mode",88,628,-48,C.ToggleRaidMode),"Mode","Switch between hiring and raid sorting. Sort mode cannot hire.")
+
     C.SetTip(MakeButton(mainFrame,"Deny Rules",118,22,-76,OpenSettings),"Deny Rules","Class and role denies sent after everyone is in the group.")
     C.SetTip(MakeButton(mainFrame,"Other Commands",118,144,-76,OpenSetup),"Other Commands","Class setup whispers. Legacy overwrite still happens last.")
     C.SetTip(MakeButton(mainFrame,"Preview",118,266,-76,function()
@@ -3167,7 +5116,7 @@ local function CreateMain()
             end
         end
     end), "Preview", "Print the queue only. Hire mode shows hires plus whispers. Sort mode shows whispers only.")
-    mainFrame.executeBtn=C.SetTip(MakeButton(mainFrame,"Execute",118,388,-76,function() C.whisperRun = nil; ExecuteQueue() end),"Execute","Hire the board, then class setup, then legacy overwrite. Slow on purpose.")
+    mainFrame.executeBtn=C.SetTip(MakeButton(mainFrame,"Execute",118,388,-76,C.HandStartHire),"Execute","Start this prepared plan once. Trusted linked accounts run only their assigned hires, in board order, after each prior step is submitted.")
     mainFrame.executeBtn.homeX=388; mainFrame.executeBtn.homeY=-76
     C.SetTip(MakeButton(mainFrame,"Stop",118,510,-76,StopQueue),"Stop","Cancel hire, sort, or whispers.")
     mainFrame.sortBtn=C.SetTip(MakeButton(mainFrame,"Sort",118,632,-76,function()
@@ -3190,12 +5139,18 @@ local function CreateMain()
     mainFrame.whisperBtn=C.SetTip(MakeButton(mainFrame,"Whispers",118,388,-76,C.StartWhispers),"Whispers","Send deny and other commands only. Does not hire.")
     mainFrame.whisperBtn.homeX=388; mainFrame.whisperBtn.homeY=-76
     mainFrame.countText=mainFrame:CreateFontString(nil,"OVERLAY","GameFontNormal"); mainFrame.countText:SetPoint("TOPRIGHT",mainFrame,"TOPRIGHT",-24,-78); mainFrame.countText:SetTextColor(1,0.85,0.25)
-    mainFrame.accountContent=CreateFrame("Frame",nil,mainFrame); mainFrame.accountContent:SetWidth(170); mainFrame.accountContent:SetHeight(490); mainFrame.accountContent:SetPoint("TOPLEFT",mainFrame,"TOPLEFT",22,-108); mainFrame.accountRows={}
+    mainFrame.accountScroll=CreateFrame("ScrollFrame",nil,mainFrame)
+    mainFrame.accountScroll:SetWidth(166); mainFrame.accountScroll:SetHeight(490); mainFrame.accountScroll:SetPoint("TOPLEFT",mainFrame,"TOPLEFT",22,-108)
+    mainFrame.accountContent=CreateFrame("Frame",nil,mainFrame.accountScroll); mainFrame.accountContent:SetWidth(165); mainFrame.accountContent:SetHeight(490); mainFrame.accountRows={}
+    mainFrame.accountScroll:SetScrollChild(mainFrame.accountContent); mainFrame.accountScroll:EnableMouseWheel(true)
+    mainFrame.accountScroll:SetScript("OnMouseWheel",C.AccountWheel)
+    mainFrame.accountContent:EnableMouseWheel(true); mainFrame.accountContent:SetScript("OnMouseWheel",C.AccountWheel)
+    C.CreateAccountScrollTrack()
     compositionContent=CreateFrame("Frame",nil,mainFrame); compositionContent:SetWidth(550); compositionContent:SetHeight(490); compositionContent:SetPoint("TOPLEFT",mainFrame,"TOPLEFT",204,-108)
     statusText=mainFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); statusText:SetPoint("BOTTOMLEFT",mainFrame,"BOTTOMLEFT",22,16); statusText:SetWidth(430); statusText:SetJustifyH("LEFT"); statusText:SetTextColor(0.75,0.90,0.70)
     mainFrame.roleText=mainFrame:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); mainFrame.roleText:SetPoint("BOTTOMRIGHT",mainFrame,"BOTTOMRIGHT",-24,16); mainFrame.roleText:SetWidth(300); mainFrame.roleText:SetJustifyH("RIGHT"); mainFrame.roleText:SetTextColor(0.85,0.88,0.70)
     mainFrame.roleText:SetText("Tank 0   Healer 0   Melee 0   Range 0")
-    RefreshPresetButton(); RefreshComposition(); C.ApplyRaidMode(); EnsureEscapeWatcher(); mainFrame:SetScript("OnShow", function() if escapeFrame then escapeFrame:Show() end; C.ApplyRaidMode() end); mainFrame:SetScript("OnHide", HideFloatingPanels); mainFrame:Hide()
+    RefreshPresetButton(); RefreshComposition(); C.ApplyRaidMode(); EnsureEscapeWatcher(); mainFrame:SetScript("OnShow", function() if escapeFrame then escapeFrame:Show() end; C.ApplyRaidMode(); C.PeerOnBuilderOpen(true) end); mainFrame:Hide(); mainFrame:SetScript("OnHide", HideFloatingPanels)
 end
 
 local function ShowDemo()
@@ -3214,12 +5169,12 @@ end
 SLASH_SHIRSRAIDBUILDER1="/srb"
 SlashCmdList["SHIRSRAIDBUILDER"]=function(message)
     local command=C.Trim(string.lower(message or ""))
-    if command=="demo" then ShowDemo() elseif not mainFrame then CreateMain(); EnsureInviteListener(); RequestInviteList(); mainFrame:Show() elseif mainFrame:IsShown() then mainFrame:Hide() else RefreshComposition(); EnsureInviteListener(); RequestInviteList(); mainFrame:Show() end
+    if command=="demo" then ShowDemo() elseif not mainFrame then CreateMain(); EnsureInviteListener(); mainFrame:Show() elseif mainFrame:IsShown() then mainFrame:Hide() else RefreshComposition(); EnsureInviteListener(); mainFrame:Show() end
 end
 
 local init=CreateFrame("Frame"); init:RegisterEvent("ADDON_LOADED"); init:RegisterEvent("VARIABLES_LOADED"); init:RegisterEvent("PLAYER_ENTERING_WORLD"); init:SetScript("OnEvent",function()
     if event == "ADDON_LOADED" and arg1 and arg1 ~= "ShirsRaidBuilder" then return end
-    if event == "PLAYER_ENTERING_WORLD" then RememberPlayer(); if mainFrame then RefreshAccountPanel(); RefreshComposition() end; return end
+    if event == "PLAYER_ENTERING_WORLD" then RememberPlayer(); C.PeerLogin(); if mainFrame then RefreshAccountPanel(); RefreshComposition() end; return end
     BindAccountDB(); EnsureDB()
     if event == "VARIABLES_LOADED" then RememberPlayer(); HarvestKnownFactions(); EnsureInviteListener(); DEFAULT_CHAT_FRAME:AddMessage("|cff66ccffShir's Raid Builder:|r v" .. C.VERSION .. " loaded. Type /srb demo.") end
 end)

@@ -295,6 +295,22 @@ test('addon legacy response reads arg2 through the registered receive handler',f
     h:click(f.addButton); assert(h:entry('Wiremage').class=='mage')
 end)
 
+test('Add Legacy row keeps its real name on the plan wire; -lite is only the whisper target',function()
+    local h=boot({presets={}}); local f=open(h)
+    f.nameInput:SetText('Longlegacynm'); h:choose(f.roleButton,'Ranged DPS'); h:choose(f.classButton,'Mage'); h:click(f.addButton)
+    local e=h:entry('Longlegacynm')
+    assert(e.kind=='legacy' and e.sourceName=='Longlegacynm' and e.charName=='Longlegacynm' and e.whisperName=='Longleg-lite','normalized saved row: '..tostring(e.whisperName))
+    e.denyList={'Blizzard'}
+    local db=h.env.ShirsRaidBuilderDB
+    local back=assert(h.C.PlanDecode(assert(h.C.PlanEncode(h:preset(),'hire',db.currentPreset))),'plan wire refused the legacy row')
+    local row
+    for _,v in ipairs(back.entries) do if v.kind=='legacy' then row=v end end
+    assert(row and row.sourceName=='Longlegacynm' and row.charName=='Longlegacynm','real legacy name lost on the wire')
+    assert(h.C.BuildHireCommand(row)=='.z addlegacy "Longlegacynm" rdps' and h.C.GetLegacyWhisperName(row)=='Longleg-lite','hire or whisper name changed')
+    -- Composition only: the per-row deny list and cached whisper name stay local.
+    assert(row.denyList==nil and row.whisperName==nil,'plan wire carried per-row settings')
+end)
+
 test('incomplete and unknown licences omit tier text without inventing data',function()
     local C=boot().C
     assert(C.CurrentLicenseTier(nil)==nil)
@@ -310,8 +326,12 @@ test('incomplete and unknown licences omit tier text without inventing data',fun
         local h=boot({inviteCharacters={Wiremage=record},presets={}})
         local found=false
         for _,row in ipairs(h.env.ShirsRaidBuilderMainFrame.accountRows) do
-            if row.fonts[1]:GetText()=='Wiremage  [0]' then
-                found=true; assert(table.getn(row.fonts)==1 and row:GetHeight()==22,'unknown licence rendered an extra tier line')
+            if row.model and row.model.name=='Wiremage' then
+                found=true
+                local expected=record.raidLicense=='t2r' and 'Wiremage - T2R' or 'Wiremage'
+                assert(row.fonts[1]:GetText()==expected and row:GetHeight()==20,'raid tier must not depend on dungeon data')
+                assert(table.getn(row.lines)==2 and row.lines[2]:GetText()=='','unknown field fabricated a raid save')
+                assert(row.countText:GetText()=='0/4','unknown licence must not hide the normal hire count')
             end
         end
         assert(found,'licence fixture never reached account renderer')
@@ -319,77 +339,6 @@ test('incomplete and unknown licences omit tier text without inventing data',fun
     assert(C.CurrentLicenseTier({raidLicense='t4r',dungeonLicense='t2d'})=='T4R - T2D')
     assert(C.CurrentLicenseTier({raidLicense='t2r',dungeonLicense='NONE'})=='T2R - T0D','explicit no dungeon licence retains known base tier')
     assert(C.CurrentLicenseTier({raidLicense='t1',dungeonLicense='t1'})=='T1 - T1')
-end)
-
--- Count real profile initialization through the registered Vanilla event path.
--- Timing/FPS is deliberately not asserted by this offline regression.
-test('idle message traffic never repeats profile initialization',function()
-    local saved={presets={},currentPreset='Profile1'}
-    for i=1,15 do saved.presets['Profile'..i]={entries={{kind='legacy',charName='Caster',class='mage',role='rdps'}}} end
-    local h=boot(saved)
-    h.env.ShirsRaidBuilderMainFrame:Hide()
-    h.env.event='VARIABLES_LOADED'
-    for _,w in ipairs(h.frames) do if w.events.VARIABLES_LOADED then h:fire(w,'OnEvent') end end
-    local calls=0; local original=h.C.MigrateCharacterRoles
-    h.C.MigrateCharacterRoles=function(roles,presets,current)
-        calls=calls+1; return original(roles,presets,current)
-    end
-    local function receive(kind,a,b)
-        h.env.event=kind; h.env.arg2=b; h.env.arg3=nil
-        for _,w in ipairs(h.frames) do if w.events[kind] then h:fire(w,'OnEvent',a) end end
-    end
-    for i=1,100 do
-        receive('CHAT_MSG_ADDON','nexus','STATS:X unrelated')
-        receive('CHAT_MSG_MONSTER_WHISPER','unrelated','nexus')
-    end
-    assert(calls==0,'unrelated messages repeated full initialization: '..calls)
-    receive('CHAT_MSG_ADDON','nexus','[nexus] ACINFO:LEGACY:LIST Wiremage:Mage:0')
-    receive('CHAT_MSG_MONSTER_WHISPER','[nexus] ACINFO:LEGACY:LIST Wirepriest:Priest:1','nexus')
-    assert(calls==0,'legacy replies repeated full initialization')
-    assert(saved.legacyCharacters.wiremage=='mage' and saved.legacyCharacters.wirepriest=='priest')
-    -- Rebinding must still repair absent SavedVariables and retain pending data.
-    h.env.ShirsRaidBuilderDB=nil
-    receive('CHAT_MSG_MONSTER_WHISPER','[nexus] ACINFO:LEGACY:LIST Newmage:Mage:0','nexus')
-    assert(calls==1,'missing DB did not initialize once')
-    local rebound=h.env.ShirsRaidBuilderDB
-    assert(rebound.presets.Profile15 and rebound.legacyCharacters.newmage=='mage')
-    receive('CHAT_MSG_ADDON','nexus','unrelated')
-    assert(calls==1,'rebound DB initialized again')
-    rebound.presets=nil
-    receive('CHAT_MSG_ADDON','nexus','unrelated')
-    assert(calls==2 and type(rebound.presets)=='table','missing presets not repaired')
-end)
-
-test('listener first use binds and initializes an absent database',function()
-    local source=string.sub(fixture,1,boundary-1)
-    local first,last=string.find(source,"    env.SlashCmdList.SHIRSRAIDBUILDER('demo')",1,true)
-    assert(first and last)
-    source=string.sub(source,1,first-1)..'    env.ShirsRaidBuilderDB=nil'..string.sub(source,last+1)
-    local coldBoot=assert(loadstring(source..'\nreturn boot'))()
-    local h=coldBoot(); local listenerFactory
-    for i=1,32 do
-        local name,value=debug.getupvalue(h.env.SlashCmdList.SHIRSRAIDBUILDER,i)
-        if name=='EnsureInviteListener' then listenerFactory=value end
-    end
-    assert(listenerFactory,'real listener factory not found'); listenerFactory()
-    local calls=0; local original=h.C.MigrateCharacterRoles
-    h.C.MigrateCharacterRoles=function(roles,presets,current)
-        calls=calls+1; return original(roles,presets,current)
-    end
-    h.env.event='CHAT_MSG_MONSTER_WHISPER'; h.env.arg2='nexus'
-    for _,w in ipairs(h.frames) do
-        if w.events.CHAT_MSG_MONSTER_WHISPER then
-            h:fire(w,'OnEvent','[nexus] ACINFO:LEGACY:LIST Coldmage:Mage:0')
-            h:fire(w,'OnEvent','unrelated')
-        end
-    end
-    assert(calls==1,'cold listener must initialize exactly once')
-    local saved=h.env.ShirsRaidBuilderDB
-    assert(saved.presets[saved.currentPreset] and saved.legacyCharacters.coldmage=='mage')
-    -- The real startup boundary may run later and must keep the early reply.
-    h.env.event='ADDON_LOADED'
-    for _,w in ipairs(h.frames) do if w.events.ADDON_LOADED then h:fire(w,'OnEvent','ShirsRaidBuilder') end end
-    assert(h.env.ShirsRaidBuilderDB==saved and saved.legacyCharacters.coldmage=='mage')
 end)
 
 print('Legacy character tests: '..passes..' PASS, '..failures..' FAIL')

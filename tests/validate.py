@@ -36,11 +36,26 @@ PUBLIC_FILES = {
     "addon/ShirsRaidBuilder/ShirsRaidBuilder_Core.lua",
     "scripts/build_release.py",
     "tests/test_core.lua",
+    "tests/test_deny_batch.lua",
     "tests/test_individual_editor.lua",
     "tests/test_legacy_characters.lua",
     "tests/test_legacy_duplicates.lua",
     "tests/test_legacy_list.lua",
     "tests/test_preset_import.lua",
+    "tests/test_peer.lua",
+    "tests/test_peer_ui.lua",
+    "tests/test_sync_ui.lua",
+    "tests/test_raid_sync.lua",
+    "tests/test_mcp_lockouts.lua",
+    "tests/test_planning_characters.lua",
+    "tests/test_handoff.lua",
+    "tests/test_handoff_ui.lua",
+    "tests/test_handoff_safety.lua",
+    "tests/test_run_authorization.lua",
+    "tests/test_local_hire.lua",
+    "tests/test_account_sync.lua",
+    "tests/test_plan_share.lua",
+    "tests/test_plan_share_ui.lua",
     "tests/test_mode_contract.lua",
     "tests/validate.py",
 }
@@ -90,6 +105,11 @@ def validate_public_boundary() -> None:
     assert re.search(r"[A-Za-z0-9._%+-]+@(gmail|hotmail|outlook)\.[A-Za-z]+", text, re.IGNORECASE) is None, "personal email found"
     assert ("STEFF" + "IPKH") not in text
     assert ("BEGIN " + "PRIVATE KEY") not in text
+    for readme in (ROOT / "README.md", ADDON / "README.txt"):
+        documentation = " ".join(readme.read_text(encoding="utf-8").replace("`", "").replace("**", "").split())
+        assert "Opening /srb is display-only and does not start synchronization." in documentation, readme.name + ": missing display-only open contract"
+        assert "Synchronization runs on login or when you click Refresh Synchronization." in documentation, readme.name + ": missing login/manual refresh contract"
+        assert re.search(r"Opening /srb sends", documentation, re.IGNORECASE) is None, readme.name + ": stale open-sync claim"
 
 
 def main() -> int:
@@ -133,6 +153,19 @@ def main() -> int:
     run([args.luac, "-p", str(ROOT / "tests" / "test_preset_import.lua")])
     import_output = run([args.lua, str(ROOT / "tests" / "test_preset_import.lua")], cwd=ROOT / "tests")
     assert "Shir's Raid Builder preset import tests: PASS" in import_output
+
+    output = run([args.lua, str(ROOT / "tests" / "test_mcp_lockouts.lua")], cwd=ROOT / "tests")
+    assert "MCP lockout tests: PASS" in output
+    for case, label in [("test_deny_batch.lua", "deny batch"), ("test_peer.lua", "peer"), ("test_peer_ui.lua", "peer UI"), ("test_sync_ui.lua", "sync UI"), ("test_raid_sync.lua", "raid sync"), ("test_account_sync.lua", "account sync"), ("test_plan_share.lua", "plan share"), ("test_plan_share_ui.lua", "plan share UI")]:
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        marker = "PASS raid sync:" if case == "test_raid_sync.lua" else "Shir's Raid Builder " + label + " tests: PASS"
+        assert marker in output, case + " did not report success: " + output
+
+    for case, label in [("test_planning_characters.lua", "planning character"), ("test_handoff.lua", "handoff core"), ("test_handoff_ui.lua", "handoff UI"), ("test_handoff_safety.lua", "handoff safety"), ("test_run_authorization.lua", "run authorization"), ("test_local_hire.lua", "local hire")]:
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "Shir's Raid Builder " + label + " tests: PASS" in output
 
     build_script = ROOT / "scripts" / "build_release.py"
     run([sys.executable, str(build_script)])

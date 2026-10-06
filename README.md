@@ -20,7 +20,7 @@ The previous release also added legacy-character refreshes, page-correct import 
 - Uses Microbot companion, legacy hire, deny, setup, and raid roster commands
 - Does not include Microbot, CCP, client files, account data, or saved profiles
 - Hiring can cost gold; the addon cannot refund a command that the server accepts
-- Opening `/srb` sends `.z addinvite list` through Say to refresh eligible hiring characters and licences
+- Opening `/srb` is display-only and does not start synchronization. Synchronization runs on login or when you click **Refresh Synchronization**.
 - Execute, Capture, and Sort can query Microbot's `nexus` addon channel for live companion owner, class, and role data
 - Starting Sort while leading a party can convert that party into a raid before moving members
 
@@ -48,6 +48,9 @@ Profiles are stored in the account-wide `ShirsRaidBuilderDB` SavedVariable.
 - Move the main window and each subpanel independently
 - Keep separate named profiles, with New, Rename, Delete, Import, and Preview controls
 - Import a saved Hire or Sort profile with a paged picker and overwrite confirmation
+- Use **Share Current Plan**, beside **Import**, to send the open plan to a linked account; the recipient does not need any panels open
+- The recipient must explicitly approve a copy or a merge; a merge keeps occupied destination slots, reserves the incoming plan's original positions where they are free, and moves conflicting incoming cards to the lowest remaining free slots
+- If a merge does not fit, the recipient's plan is left unchanged; a shared plan is never executed automatically
 - Preview the complete command queue without sending anything
 - Stop a running hire or whisper queue
 
