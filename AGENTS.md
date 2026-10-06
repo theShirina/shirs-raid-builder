@@ -50,7 +50,7 @@ For targeted checks from `tests/`:
 
 - Preserve the separation between Hire mode and Sort mode. Hire execution must not silently start raid sorting; Sort mode must not send hiring commands.
 - Preserve one-to-one normal-hire matching by owner/class/role and group-wide setup/deny expansion for all matching companions.
-- Keep normal hire pacing at 7.5–8.5 seconds and preserve reply-aware whisper sequencing unless the task explicitly changes the protocol.
+- After a normal hire, wait for its companion to join the group, then wait 1 second before the next hire. If no join is seen, keep the 7.5–8.5-second fallback wait. Preserve reply-aware whisper sequencing unless the task explicitly changes the protocol.
 - Treat GRINFO and other Microbot responses as runtime data. Do not claim live coverage from static source inspection or synthetic tests.
 - Use only WoW 1.12 and Lua 5.0.3-compatible syntax and APIs. Do not introduce Lua 5.1+ features or modern WoW APIs.
 - Keep the public repository free of account data, SavedVariables, private client files, credentials, personal paths, and generated private snapshots.
