@@ -14,7 +14,7 @@ Download [ShirsRaidBuilder-1.0.zip](https://github.com/theShirina/shirs-raid-bui
 
 - Link accounts on the same realm, remember account-wide or character-only approvals, and synchronize characters, licences, factions, and saved raid snapshots. The sidebar shows linked characters and snapshot age; licence details have a separate read-only view. Saved links can be renewed, unlinked or forgotten.
 - Share the current plan with linked accounts. Each recipient can approve a separate copy, merge, or reject it; sharing never runs a plan or sends deny and setup rules. An expired link is renewed and a pending approval is awaited automatically.
-- Use one **Execute** on the initiating account to hire normal and legacy characters across approved linked accounts, in board order. Linked accounts hire on their own, and **Hire status** shows progress and stop controls.
+- Use one **Execute** on the initiating account to hire normal and legacy characters across approved linked accounts, in board order. Linked accounts hire on their own, later hand-offs are shorter, and **Hire status** shows progress and stop controls.
 - Plan with remembered linked characters, their hire counts, tiers and faction/class/race choices. **Hire from** moves a card to another eligible character, and cards show their tier.
 - Send several deny spells to one companion in a single whisper.
 
@@ -39,12 +39,11 @@ Download [ShirsRaidBuilder-1.0.zip](https://github.com/theShirina/shirs-raid-bui
 - Uses Microbot companion, legacy hire, deny, setup, and raid roster commands
 - All accounts in a linked run must use v1.0. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
 - Linked hires need an approved link and recent synchronization. Old sidebar snapshots are display-only and do not authorize a run
-- The first link requires the builder to be open on the receiving account. Saved account links sync at login or when you click **Refresh Synchronization**. Opening `/srb` only opens the window; it does not start a sync.
+- The first link requires the builder to be open on the receiving account. Synchronization runs on login or when you click **Refresh Synchronization**. Opening `/srb` is display-only and does not start synchronization.
 - Accounts that log in close together can now synchronize without waiting for a long timeout.
 - Saved raid snapshots come from Microbot Control Panel; enable it on each character whose saves you want to see
 - Does not include Microbot, CCP, client files, account data, or saved profiles
 - Hiring can cost gold; the addon cannot refund a command that the server accepts
-- Opening `/srb` is display-only and does not start synchronization. Synchronization runs on login or when you click **Refresh Synchronization**.
 - Execute, Capture, and Sort can query Microbot's `nexus` addon channel for live companion owner, class, and role data
 - Starting Sort while leading a party can convert that party into a raid before moving members
 - Other linked accounts' players also use raid slots but are not counted as board cards; ten players leave room for 30 companions
