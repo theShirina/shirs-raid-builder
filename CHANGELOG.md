@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0
+
+### Added
+
+- Link accounts on the same realm, remember account-wide or character-only approvals, and synchronize characters, licences, factions, and saved raid snapshots. The sidebar shows linked characters and snapshot age, with a separate read-only licence view. Saved links can be renewed, unlinked or forgotten.
+- Share the current plan with linked accounts. Recipients can approve a copy or merge, or reject it; sharing never runs a plan or sends deny and setup rules. Expired links are renewed and pending approvals are awaited automatically.
+- Run normal and legacy hires across approved linked accounts with one **Execute** on the initiating account. Hiring follows board order, the initiating plan's rules apply, and **Hire status** shows progress and stop controls.
+- Plan with remembered linked characters, their hire counts, tiers, licences and faction choices. **Hire from** moves a card to another eligible character, and cards show their tier.
+- Send multiple deny spells to one companion in a single whisper.
+
+### Changed
+
+- Normal hire pacing now follows a companion joining, then waits one second; when no join is seen, the 7.5–8.5 second wait remains. Legacy companions also get time to join before setup or deny commands are sent.
+- Saved raid snapshots now come from Microbot Control Panel. Enable it on each character whose saves you want to see. The Naxxramas label now reads **NAXX**.
+- The main window puts linking, synchronization, hire status, plan sharing and import in the top bar. `/srb` only opens the window; synchronization runs at login or when requested. Escape closes the link prompt, link panel and licence view.
+- Re-runs now distinguish companions by their hire-from character, and hire counts include all 40 board slots. Accounts that log in close together can synchronize without a long timeout.
+
+### Fixed
+
+- A single remaining hire on a re-run could be sent twice and spend gold twice; it now runs once.
+- Group setup or deny commands could be sent before a newly hired companion appeared in the group; the addon now waits for it.
+- A held legacy setup command could be whispered twice when Sort mode started; it is now sent once.
+- Legacy deny commands could arrive before the legacy companion joined, and a missing companion could go unreported; the addon now waits and reports the outcome.
+- Opening `/srb` could send an invite-list request; it now only opens the window, while synchronization runs at login or when requested.
+
 ## 0.76
 
 This correction release fixes a combat-workload problem present in 0.75.

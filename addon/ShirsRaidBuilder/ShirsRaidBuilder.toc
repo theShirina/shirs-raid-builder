@@ -2,7 +2,7 @@
 ## Title: Shir's Raid Builder
 ## Notes: Build, hire, configure, and sort Microbot raid groups
 ## Author: Shirina
-## Version: 0.76
+## Version: 1.0
 ## SavedVariables: ShirsRaidBuilderDB
 
 ShirsRaidBuilder_Core.lua
