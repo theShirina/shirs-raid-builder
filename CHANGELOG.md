@@ -6,7 +6,7 @@
 
 - Link accounts on the same realm, remember account-wide or character-only approvals, and synchronize characters, licences, factions, and saved raid snapshots. The sidebar shows linked characters and snapshot age, with a separate read-only licence view. Saved links can be renewed, unlinked or forgotten.
 - Share the current plan with linked accounts. Recipients can approve a copy or merge, or reject it; sharing never runs a plan or sends deny and setup rules. Expired links are renewed and pending approvals are awaited automatically.
-- Run normal and legacy hires across approved linked accounts with one **Execute** on the initiating account. Hiring follows board order, the initiating plan's rules apply, and **Hire status** shows progress and stop controls.
+- Run normal and legacy hires across approved linked accounts with one **Execute** on the initiating account. Hiring follows board order, the initiating plan's rules apply, later hand-offs are shorter, and **Hire status** shows progress and stop controls.
 - Plan with remembered linked characters, their hire counts, tiers, licences and faction choices. **Hire from** moves a card to another eligible character, and cards show their tier.
 - Send multiple deny spells to one companion in a single whisper.
 

@@ -27,7 +27,8 @@ you click Refresh Synchronization.
 Share Current Plan lets each linked recipient approve a copy or merge, or
 reject it. A merge that does not fit leaves the plan unchanged. Sharing never
 executes a plan. Hire status (or /srbhandoff) shows linked-run progress and
-stop controls. The initiating plan's rules apply to linked hires.
+stop controls. The initiating plan's rules apply to linked hires. Later
+hand-offs are shorter than the first, so linked runs send fewer messages.
 
 Saved raid snapshots come from Microbot Control Panel; enable it on each
 character. Other accounts' players use raid slots but are not board cards.
@@ -39,6 +40,8 @@ hire. Re-runs match by the hire-from character, so review the board before
 running it again. A Stop on the receiving account is not reported to the
 leader at once; use Cancel process on the leader if the run stalls.
 Linked-run handoff messages appear in both accounts' chat frames.
+Run profile names allow letters, numbers, spaces, underscores, apostrophes
+and hyphens, up to 48 characters.
 
 Normal hiring waits for the companion to join, then one second. If no join is
 seen, the 7.5-8.5 second wait remains. Legacy companions are also given time
@@ -52,7 +55,9 @@ from Microbot Control Panel include MC, BWL, AQ40 and NAXX when available.
 Add Legacy remembers known class and role choices. Its picker can scroll through
 long lists, shows known classes in colour, and hides names already in the current
 profile. Individual commands can set deny and setup commands for one legacy
-hire.
+hire. Add Normal can plan with linked characters' remembered tiers and faction
+limits; Hire from moves a card to another eligible character, and cards show
+their tier.
 
 
 
