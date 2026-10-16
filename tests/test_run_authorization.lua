@@ -163,7 +163,7 @@ pump(12)
 local current=stopped.env.ShirsRaidBuilderDB.handoff.active
 assert(current.phase=='waiting' and stopped.C.handAuthority,'fixture did not reach waiting')
 stopped:click(stopped:button(stopped.env.ShirsRaidBuilderMainFrame,'Stop'))
-assert(not stopped.C.handAuthority and current.phase=='interrupted','Stop while awaiting remote group retained execution authority')
+assert(not stopped.C.handAuthority and current.phase=='cancelled','Stop while awaiting remote group retained execution authority')
 pump(100)
 local hires=0;for _,line in ipairs(trace) do if string.find(line,' hires ',1,true) then hires=hires+1 end end
 assert(hires==1,'Stop or timeout replayed hires')
@@ -204,7 +204,7 @@ assert(table.getn(trace)==1 and h.C.handAuthority,'valid authorization failed')
 receiveGrant(h,s,assert(h.C.HandEncode(grant)),'Alice','400002')
 assert(table.getn(trace)==1,'fresh transport nonce replayed the authorized step')
 h:click(h:button(h.env.ShirsRaidBuilderMainFrame,'Stop'))
-assert(not h.C.handAuthority and h.env.ShirsRaidBuilderDB.handoff.active.phase=='interrupted','interrupted remote group retained authority')
+assert(not h.C.handAuthority and h.env.ShirsRaidBuilderDB.handoff.active.phase=='cancelled','interrupted remote group retained authority')
 receiveGrant(h,s,assert(h.C.HandEncode(grant)),'Alice','400003')
 assert(table.getn(trace)==1,'interrupted authorization replayed a hire')
 -- Offline link renewal expires visibly, without replaying the submitted leader group.
@@ -304,12 +304,12 @@ end
 assert(stopAt,'participant never started its granted group: '..table.concat(trace,' | '))
 local stoppedRun=lead.env.ShirsRaidBuilderDB.handoff.active
 lead:click(lead:button(lead.env.ShirsRaidBuilderMainFrame,'Stop'))
-assert(not lead.C.handAuthority and stoppedRun.phase=='interrupted','leader Stop retained authority')
+assert(not lead.C.handAuthority and stoppedRun.phase=='cancelled','leader Stop retained authority')
 pump(120)
 expect('delivered group after Stop',{'alice hires .z addlegacy "First" rdps',grantLine,'bob hires .z addinvite Bob t2r mage rdps frost human female',
  'bob hires .z addinvite Bob t2r warlock rdps default human female','bob REPORT 2 to alice'},lead,peer)
 assert(at[4]>stopAt,'second participant hire was not paced after the leader Stop')
-assert(not lead.C.handAuthority and lead.env.ShirsRaidBuilderDB.handoff.active==stoppedRun and stoppedRun.phase=='interrupted' and stoppedRun.step==2,
+assert(not lead.C.handAuthority and lead.env.ShirsRaidBuilderDB.handoff.active==stoppedRun and stoppedRun.phase=='cancelled' and stoppedRun.step==2,
  'REPORT after Stop advanced or re-armed the leader')
 -- The first occupied group may belong to a linked account: one leader Execute grants it
 -- first, the initiator stays origin, and the later local group follows Bob's REPORT.
@@ -546,9 +546,9 @@ do
  scenario('Stop during a pending PAUSE',function()
   local out=refusing()
   assert(out.progress.sent<out.progress.total,'PAUSE completed before Stop')
-  peer.env.SlashCmdList.SHIRSRAIDBUILDERHANDOFF()
+  local main=peer.env.ShirsRaidBuilderMainFrame; main:Show()
   local sent=table.getn(peer.whispers)
-  peer:click(peer:button(peer.C.handFrame,'Stop execution'))
+  peer:click(peer:button(main,'Stop'))
   assert(not peer.C.handTransfer and not peer.C.handAuthority and not peer.C.HandParse(peer.C.peerPending),'Stop kept the PAUSE transfer or authority')
   for _,session in pairs(peer.C.peerSessions) do assert(not session.state.handOut and not peer.C.HandParse(session.pending),'Stop kept unsent PAUSE packets') end
   local run=lead.env.ShirsRaidBuilderDB.handoff.active
@@ -560,18 +560,18 @@ do
    'report deadline did not visibly interrupt the leader: '..tostring(run.phase)..', '..tostring(lead.C.handNotice))
   expect('Stop during a pending PAUSE',{invite('alice','Alicia'),'alice GRANT 2 to bob accounts '..ids.alice..','..ids.bob},lead,peer)
  end)
- -- Cancel on the refusing receiver discards the unsent PAUSE the same way.
- scenario('Cancel during a pending PAUSE',function()
+ -- Repeated main Stop on the refusing receiver stays terminal and sends no PAUSE.
+ scenario('repeated Stop during a pending PAUSE',function()
   refusing()
-  peer.env.SlashCmdList.SHIRSRAIDBUILDERHANDOFF()
+  local main=peer.env.ShirsRaidBuilderMainFrame; main:Show()
   local sent=table.getn(peer.whispers)
-  peer:click(peer:button(peer.C.handFrame,'Cancel process'))
+  peer:click(peer:button(main,'Stop')); peer:click(peer:button(main,'Stop'))
   assert(peer.env.ShirsRaidBuilderDB.handoff.active.phase=='cancelled' and not peer.C.handTransfer and not peer.C.handAuthority
-   and not peer.C.HandParse(peer.C.peerPending),'Cancel kept the PAUSE transfer or authority')
-  for _,session in pairs(peer.C.peerSessions) do assert(not session.state.handOut and not peer.C.HandParse(session.pending),'Cancel kept unsent PAUSE packets') end
+   and not peer.C.HandParse(peer.C.peerPending),'Stop kept the PAUSE transfer or authority')
+  for _,session in pairs(peer.C.peerSessions) do assert(not session.state.handOut and not peer.C.HandParse(session.pending),'Stop kept unsent PAUSE packets') end
   pump(30)
   local run=lead.env.ShirsRaidBuilderDB.handoff.active
-  assert(table.getn(peer.whispers)==sent and run.phase=='waiting' and lead.C.handAuthority,'Cancel let the PAUSE or a new one through')
+  assert(table.getn(peer.whispers)==sent and run.phase=='waiting' and lead.C.handAuthority,'Stop let the PAUSE or a new one through')
  end)
  -- Real receive: a stale-step or wrong-claim PAUSE on Bob's live session, or any PAUSE from
  -- an unlinked character, never pauses a valid waiting run; the run then finishes normally.
@@ -1350,6 +1350,56 @@ do
   table.remove(lines,4) -- slot 3 is already present: no hire
   match('timing held first',lines,lead,peer)
   waited('timing held first',peer); pacing('timing held first'); settled('timing held first',lead,peer,board)
+ end)
+ -- A saved profile name with '/' (the screenshot's "Fullpower bwl/aq"). The run carries a
+ -- wire-safe label; the saved name never changes.
+ scenario('plan name with a slash starts the linked run',function()
+  local board=literal({},1,'Alicia','Bobalt','Alicia')
+  local lead,peer=start(board,{'Alice','Alicia'},{'Bobalt'},{'Bob','Bobalt'})
+  local db=lead.env.ShirsRaidBuilderDB
+  db.presets['Fullpower bwl/aq']=db.presets[db.currentPreset]; db.presets[db.currentPreset]=nil; db.currentPreset='Fullpower bwl/aq'
+  raided(lead,peer)
+  execute(lead,130); show('slash plan name')
+  match('slash plan name',expected(board,{{'alice',1,2},{'bob',3,3},{'alice',4,5}}),lead,peer)
+  assert(runs[1].name=='Fullpower bwl aq','wire label: '..tostring(runs[1].name))
+  assert(db.currentPreset=='Fullpower bwl/aq' and db.presets['Fullpower bwl/aq'],'saved profile name changed')
+  settled('slash plan name',lead,peer,board)
+ end)
+ -- Bob's legacy companion is already in the raid: Bob hires only his missing companion,
+ -- and still whispers the legacy's own denies.
+ local bobleg={kind='legacy',charName='Bobleg',sourceName='Bobleg',class='warrior',role='tank',denyList={'Taunt'}}
+ scenario('linked legacy already in the raid is not hired again',function()
+  local board={[1]=hire('Alicia','mage','rdps','frost'),[6]=bobleg,[7]=hire('Bobalt','mage','rdps','frost')}
+  local lead,peer=start(board,{'Alice','Alicia'},{'Bobalt','Bobleg'},{'Bob','Bobalt','Bobleg'})
+  raided(lead,peer,{{name='Alice'},{name='Bob'},{name='Bobleg-lite'}})
+  execute(lead,150); show('linked present legacy')
+  local lines=expected(board,{{'alice',1,5},{'bob',6,10},{'bob'}},{[3]={'bob whispers Bobleg-lite: deny add Taunt'}})
+  for i,line in ipairs(lines) do if line=='bob hires .z addlegacy "Bobleg" tank' then table.remove(lines,i); break end end
+  match('linked present legacy',lines,lead,peer)
+  pacing('linked present legacy'); settled('linked present legacy',lead,peer,board)
+ end)
+ -- Every row a linked account would run is a legacy companion already in the raid, with
+ -- nothing to whisper: no grant, no link, one local queue.
+ scenario('linked rows all present and silent run locally',function()
+  local quiet={kind='legacy',charName='Bobleg',sourceName='Bobleg',class='warrior',role='tank'}
+  local board={[1]=hire('Alicia','mage','rdps','frost'),[6]=quiet}
+  local lead,peer=start(board,{'Alice','Alicia'},{'Bobalt','Bobleg'},{'Bob','Bobalt','Bobleg'})
+  raided(lead,peer,{{name='Alice'},{name='Bob'},{name='Bobleg-lite'}})
+  execute(lead,60); show('linked present silent')
+  match('linked present silent',{'alice hires '..invite('Alicia','mage','rdps','frost')},lead,peer)
+  local db=lead.env.ShirsRaidBuilderDB
+  assert(not (db.handoff and db.handoff.active) and not lead.C.handAuthority,'present-only rows still started a linked run')
+ end)
+ -- The same row with its companion missing (only a player named Bobleg is here) still
+ -- needs Bob's account: the run goes through the linked grant.
+ scenario('linked legacy missing still needs its account',function()
+  local quiet={kind='legacy',charName='Bobleg',sourceName='Bobleg',class='warrior',role='tank'}
+  local board={[1]=hire('Alicia','mage','rdps','frost'),[6]=quiet}
+  local lead,peer=start(board,{'Alice','Alicia'},{'Bobalt','Bobleg'},{'Bob','Bobalt','Bobleg'})
+  raided(lead,peer,{{name='Alice'},{name='Bob'},{name='Bobleg'}})
+  execute(lead,60); show('linked missing legacy')
+  match('linked missing legacy',expected(board,{{'alice',1,5},{'bob',6,10}}),lead,peer)
+  settled('linked missing legacy',lead,peer,board)
  end)
  raid=nil; queued=nil
  -- 3. Five transfers received by the inviting endpoint across a link renewal, on the real

@@ -130,15 +130,30 @@ function C.GetLegacyHireName(legacy)
     local source = C.Trim(legacy.sourceName)
     if source ~= "" then return source end
     local name = C.Trim(legacy.charName)
-    if name == "" then return "" end
-    if string.sub(string.lower(name), -5) == "-lite" then
-        return string.sub(name, 1, string.len(name) - 5)
-    end
+    -- A -lite label contains no verified full source identity.
+    if string.sub(string.lower(name), -5) == "-lite" then return "" end
     return name
+end
+
+-- Planning identity and the server's shortened live address are separate. A
+-- shared address does not merge sources, but cannot safely drive Execute.
+function C.LegacyTargetError(entries)
+    local targets={}
+    for i=1,40 do
+        local e=entries and entries[i]
+        if type(e)=="table" and e.kind=="legacy" then
+            local full=C.GetLegacyHireName(e)
+            if not C.IsSafeCharacterName(full) then return "Legacy slot "..i.." has only an unknown or shortened identity. Choose its actual full source character before Execute." end
+            local target=C.GetLegacyWhisperName(e); local key=string.lower(target)
+            if targets[key] then return "Legacy sources "..targets[key].." and "..full.." share live name "..target..". Their full hire names differ, but this client cannot safely match or whisper both. Edit the plan before Execute; nothing was sent." end
+            targets[key]=full
+        end
+    end
 end
 
 function C.BuildHireCommand(legacy)
     if type(legacy) ~= "table" then return nil end
+    if C.NormalizeClassLabel(legacy.class) == "random" then return nil end
     local name = C.ResolveLegacyHireName(legacy, C.knownCharacterNames)
     if not C.IsSafeCharacterName(name) then return nil end
     local role = C.Trim(legacy.role)
@@ -153,10 +168,22 @@ function C.BuildHireCommand(legacy)
     return command
 end
 
+function C.IsRandomHire(entry)
+    return type(entry) == "table" and entry.kind == "normal" and entry.class == "random"
+end
+
 function C.BuildNormalHireCommand(slot)
     if type(slot) ~= "table" then return nil end
     local account = C.Trim(slot.account)
     if not C.IsSafeCharacterName(account) then return nil end
+    if slot.class == "random" then
+        if not C.IsRandomHire(slot) or slot.account ~= account or type(slot.tier) ~= "string"
+            or not (slot.tier == "t0d" or string.find(slot.tier, "^t[1-5][dr]$"))
+            or not (slot.role == "tank" or slot.role == "healer" or slot.role == "dps")
+            or slot.spec ~= nil or slot.race ~= nil or slot.gender ~= nil then return nil end
+        -- MCP's quick role buttons leave class, spec, race and gender to the server.
+        return ".z addi " .. account .. " " .. slot.tier .. " " .. slot.role
+    end
     local fields = {
         account,
         C.Trim(slot.tier) ~= "" and C.Trim(slot.tier) or "t2r",
@@ -824,11 +851,23 @@ function C.BuildQueue(preset)
     return C.BatchDenyQueue(queue)
 end
 
+function C.RandomHireAllowsRole(entry, class, role)
+    local observedRole = C.NormalizeRoleLabel(role)
+    return C.IsRandomHire(entry) and C.BuildNormalHireCommand(entry) ~= nil
+        and C.RoleAllowedForClass(class, observedRole)
+        and (entry.role == observedRole or (entry.role == "dps" and (observedRole == "mdps" or observedRole == "rdps")))
+end
+
 function C.NormalHireMatchesInfo(entry, record)
     if type(entry) ~= "table" or entry.kind ~= "normal" or type(record) ~= "table" then return false end
     local wantedName = C.Trim(entry.companionName)
     local recordName = C.Trim(record.name)
+    -- Legacy companions are a separate hire type, even when no legacy row is in this batch.
+    if string.find(string.lower(recordName), "%-lite$") then return false end
     if C.Trim(entry.account)=="" or string.lower(C.Trim(entry.account))~=string.lower(C.Trim(record.owner)) then return false end
+    if C.IsRandomHire(entry) then
+        return C.IsSafeCharacterName(recordName) and C.RandomHireAllowsRole(entry, record.class, record.role)
+    end
     if wantedName ~= "" and string.lower(wantedName) == string.lower(recordName) then return true end
     if C.Trim(entry.account) == "" or C.Trim(entry.class) == "" or C.Trim(entry.role) == "" then return false end
     return string.lower(C.Trim(entry.account)) == string.lower(C.Trim(record.owner))
@@ -836,28 +875,110 @@ function C.NormalHireMatchesInfo(entry, record)
         and C.NormalizeRoleLabel(entry.role) == C.NormalizeRoleLabel(record.role)
 end
 
-function C.FilterExistingNormalHires(queue, entries, info)
-    local result = {}
-    local used = {}
-    local skipped = 0
-    if type(queue) ~= "table" then return result, skipped end
-    for i = 1, table.getn(queue) do
-        local item = queue[i]
-        local omit = false
-        if item and item.kind == "normal" and type(entries) == "table" and type(info) == "table" then
-            local entry = entries[item.sourceEntryIndex]
-            for ri = 1, table.getn(info) do
-                if not used[ri] and C.NormalHireMatchesInfo(entry, info[ri]) then
-                    used[ri] = true
-                    omit = true
-                    skipped = skipped + 1
-                    break
+-- Concrete/named rows reserve live records before role-only intent. In both pools,
+-- every exact owner is tried before the established hirer fallback.
+function C.NormalHirePriority(entry)
+    if C.IsRandomHire(entry) then return 3 end
+    if C.Trim(entry.companionName) ~= "" then return 1 end
+    return 2
+end
+
+function C.NormalHireSlots(entries)
+    local slots = {}
+    for priority = 1, 3 do
+        for slot = 1, 40 do
+            local entry = type(entries) == "table" and entries[slot]
+            if type(entry) == "table" and entry.kind == "normal" and C.NormalHirePriority(entry) == priority then
+                table.insert(slots, slot)
+            end
+        end
+    end
+    return slots
+end
+
+function C.MatchNormalHireEntries(entries, records, hirers)
+    local matched, used = {}, {}
+    local slots = C.NormalHireSlots(entries)
+    for pool = 1, 2 do
+        -- Exact names first, then class/role; repeat only for the proven hirer.
+        for pass = 1, 4 do
+            for _, slot in ipairs(slots) do
+                local entry = entries[slot]
+                if not matched[slot] and ((pool == 2) == C.IsRandomHire(entry)) then
+                    for _, row in ipairs(type(records) == "table" and records or {}) do
+                        local key = type(row) == "table" and string.lower(C.Trim(row.name))
+                        if key and key ~= "" and not used[key]
+                            and (pass == 2 or pass == 4 or key == string.lower(C.Trim(entry.companionName)))
+                            and ((pass <= 2 and C.NormalHireMatchesInfo(entry, row))
+                            or (pass >= 3 and hirers and C.HandHiredBy(entry, row, hirers[slot]))) then
+                            matched[slot] = row; used[key] = true; break
+                        end
+                    end
                 end
             end
         end
-        if not omit then table.insert(result, item) end
+    end
+    return matched
+end
+
+function C.FilterExistingNormalHires(queue, entries, info)
+    local result, active, skipped = {}, {}, 0
+    if type(queue) ~= "table" then return result, skipped end
+    for _, item in ipairs(queue) do
+        if item.kind == "normal" and type(entries) == "table" and item.sourceEntryIndex then
+            active[item.sourceEntryIndex] = entries[item.sourceEntryIndex]
+        end
+    end
+    local matched = C.MatchNormalHireEntries(active, info)
+    for _, item in ipairs(queue) do
+        if item.kind == "normal" and matched[item.sourceEntryIndex] then skipped = skipped + 1
+        else table.insert(result, item) end
     end
     return result, skipped
+end
+
+-- Legacy rows whose companion is already in the group: slot -> true. A row matches only its
+-- exact -lite name in present (a roster snapshot, name -> true), and each live member covers
+-- one row, in board order.
+function C.PresentLegacySlots(entries, present)
+    local slots,used,aliases,live={}, {}, {}, {}
+    if type(entries) ~= "table" or type(present) ~= "table" then return slots end
+    for name,exists in pairs(present) do if type(name)=="string" and exists then live[string.lower(name)]=true end end
+    for i=1,40 do
+        local e=entries[i]
+        if type(e)=="table" and e.kind=="legacy" then
+            local key=string.lower(C.GetLegacyWhisperName(e)); aliases[key]=(aliases[key] or 0)+1
+        end
+    end
+    for i=1,40 do
+        local e=entries[i]
+        if type(e)=="table" and e.kind=="legacy" and C.IsSafeCharacterName(C.GetLegacyHireName(e)) then
+            local key=string.lower(C.GetLegacyWhisperName(e))
+            if key~="" and aliases[key]==1 and live[key] and not used[key] then used[key]=true; slots[i]=true end
+        end
+    end
+    return slots
+end
+
+-- Drops the legacy hires of PresentLegacySlots; their deny and setup whispers stay queued.
+function C.FilterPresentLegacyHires(queue, entries, present)
+    local slots, result, skipped = C.PresentLegacySlots(entries, present), {}, 0
+    if type(queue) ~= "table" then return result, skipped end
+    for i = 1, table.getn(queue) do
+        local item = queue[i]
+        if item and item.kind == "hire" and slots[item.sourceEntryIndex] then skipped = skipped + 1
+        else table.insert(result, item) end
+    end
+    return result, skipped
+end
+
+-- The label a linked run carries for a saved profile name. Only the run wire uses it.
+function C.HandWireName(name)
+    local label = string.gsub(tostring(name or ""), "[^A-Za-z0-9 _'-]", " ")
+    label = string.sub(C.Trim(string.gsub(label, "%s+", " ")), 1, 48)
+    label = C.Trim(label)
+    if label == "" then return "Plan" end
+    return label
 end
 
 function C.IsFilledEntry(entry)
@@ -1032,6 +1153,10 @@ end
 
 function C.NormalizeBoardEntry(entry)
     if type(entry) ~= "table" then return {kind="empty"} end
+    if C.NormalizeClassLabel(entry.class) == "random" then
+        if not C.IsRandomHire(entry) then return {kind="empty"} end
+        return entry -- Intent stays unknown until GRINFO; never apply class defaults.
+    end
     if entry.kind == "empty" then return entry end
     if entry.kind == "player" then
         local class = C.Trim(entry.class)
@@ -1081,14 +1206,18 @@ function C.RepairRaidEntries(entries)
     return entries
 end
 
-function C.EnsurePlayerSlot(entries, name, class, role)
+function C.EnsurePlayerSlot(entries, name, class, role, preferred)
+    if preferred==40 then
+        local slot=C.PlannerPlacePlayer(entries,{}, {name=name,class=class,role=C.Trim(role)~="" and role or nil})
+        C.PadRaidSlots(entries,40); return slot
+    end
     C.PadRaidSlots(entries, 40)
     local playerName = C.Trim(name)
     if playerName == "" then return nil end
     local found = nil
     local i
     for i = 1, 40 do
-        if C.IsPlayerEntry(entries[i]) then
+        if C.IsPlayerEntry(entries[i]) and string.lower(C.Trim(entries[i].charName))==string.lower(playerName) then
             if found then
                 entries[i] = {kind="empty"}
             else
@@ -1156,13 +1285,17 @@ function C.FilledCount(entries)
     return total
 end
 
-function C.CountRoles(entries)
-    local counts = {tank=0, healer=0, mdps=0, rdps=0}
+function C.CountRoles(entries,companionsOnly)
+    local counts = {tank=0, healer=0, mdps=0, rdps=0, dps=0}
+    if companionsOnly then counts.humans=0 end
     if type(entries) ~= "table" then return counts end
     for i = 1, table.getn(entries) do
         local entry = entries[i]
-        if C.IsFilledEntry(entry) and counts[entry.role] then
-            counts[entry.role] = counts[entry.role] + 1
+        if C.IsFilledEntry(entry) then
+            -- Hire footer excludes explicit humans, never guesses that an
+            -- unresolved guest/companion is a player. Other callers stay unchanged.
+            if companionsOnly and C.IsPlayerEntry(entry) then counts.humans=counts.humans+1
+            elseif counts[entry.role] then counts[entry.role]=counts[entry.role]+1 end
         end
     end
     return counts
@@ -1628,7 +1761,7 @@ function C.BuildLiveRaidAssignments(entries, companions, roster, info, playerNam
         if not take(name) then return false end
         slotName[index] = name
         C.RememberRaidAssignment(map, name, group, index)
-        if save and entries[index] and (entries[index].kind == "normal" or entries[index].kind == "guest") then
+        if save and entries[index] and not C.IsRandomHire(entries[index]) and (entries[index].kind == "normal" or entries[index].kind == "guest") then
             entries[index].companionName = C.Trim(name)
         end
         return true
@@ -1642,7 +1775,7 @@ function C.BuildLiveRaidAssignments(entries, companions, roster, info, playerNam
                 local you = C.Trim(playerName)
                 if you ~= "" then assignSlot(i, you, group, false)
                 else assignSlot(i, entry.charName, group, false) end
-            else
+            elseif not C.IsRandomHire(entry) then
                 local done = false
                 if type(companions) == "table" and C.Trim(companions[i]) ~= "" then
                     if (not roster) or table.getn(roster) == 0 or C.NameInRoster(roster, companions[i]) then
@@ -1666,7 +1799,7 @@ function C.BuildLiveRaidAssignments(entries, companions, roster, info, playerNam
     if type(info) == "table" then
         for i = 1, table.getn(entries) do
             local entry = entries[i]
-            if C.IsFilledEntry(entry) and (not slotName[i]) and entry.kind ~= "player" and entry.kind ~= "legacy" then
+            if C.IsFilledEntry(entry) and (not slotName[i]) and entry.kind ~= "player" and entry.kind ~= "legacy" and not C.IsRandomHire(entry) then
                 local group = C.RaidSlotGroup(i)
                 local j
                 for j = 1, table.getn(info) do
@@ -1687,14 +1820,14 @@ function C.BuildLiveRaidAssignments(entries, companions, roster, info, playerNam
     end
     for i = 1, table.getn(entries) do
         local entry = entries[i]
-        if C.IsFilledEntry(entry) and (not slotName[i]) and C.NameInRoster(roster, entry.companionName) then
+        if C.IsFilledEntry(entry) and not C.IsRandomHire(entry) and (not slotName[i]) and C.NameInRoster(roster, entry.companionName) then
             assignSlot(i, entry.companionName, C.RaidSlotGroup(i), false)
         end
     end
     if type(roster) == "table" then
         for i = 1, table.getn(entries) do
             local entry = entries[i]
-            if C.IsFilledEntry(entry) and (not slotName[i]) then
+            if C.IsFilledEntry(entry) and not C.IsRandomHire(entry) and (not slotName[i]) then
                 local wantClass = C.NormalizeClassLabel(entry.class)
                 local hits = {}
                 local r
@@ -1705,6 +1838,18 @@ function C.BuildLiveRaidAssignments(entries, companions, roster, info, playerNam
                     end
                 end
                 if table.getn(hits) == 1 then assignSlot(i, hits[1], C.RaidSlotGroup(i), true) end
+            end
+        end
+    end
+    -- A roster name or detected join alone cannot prove a random hire's class,
+    -- role or owner. Only unused, present GRINFO records may fill these slots.
+    for _, slot in ipairs(C.NormalHireSlots(entries)) do
+        local entry = entries[slot]
+        if C.IsRandomHire(entry) then
+            for _, row in ipairs(type(info) == "table" and info or {}) do
+                if C.NormalHireMatchesInfo(entry, row) and ((not roster) or table.getn(roster) == 0 or C.NameInRoster(roster, row.name)) then
+                    if assignSlot(slot, row.name, C.RaidSlotGroup(slot), false) then break end
+                end
             end
         end
     end
@@ -1918,10 +2063,8 @@ function C.ResolveLegacyHireName(entry, realNames)
     for i = 1, table.getn(realNames) do
         if string.lower(C.Trim(realNames[i])) == string.lower(raw) then return C.Trim(realNames[i]) end
     end
-    for i = 1, table.getn(realNames) do
-        local real = C.Trim(realNames[i])
-        if string.lower(C.LegacyHireStub(real)) == string.lower(raw) then return real end
-    end
+    -- Canonicalize an exact known name only. Seven-letter prefixes are labels,
+    -- never evidence that one of several full characters owns this row.
     return raw
 end
 
@@ -2048,6 +2191,7 @@ function C.PlanEntry(entry)
     if type(entry)~="table" then return nil end
     local kinds={normal=true,legacy=true,guest=true,player=true,empty=true}
     if not kinds[entry.kind] then return nil end
+    if entry.class=="random" and not C.BuildNormalHireCommand(entry) then return nil end
     local out={}
     for _,key in ipairs(C.PLAN_FIELDS) do
         local value=entry[key]
@@ -2059,6 +2203,7 @@ function C.PlanEntry(entry)
     if out.kind=="empty" then return {kind="empty"} end
     if out.kind=="normal" and not C.IsSafeCharacterName(out.account) then return nil end
     if out.kind=="legacy" and not C.IsSafeCharacterName(out.sourceName or out.charName) then return nil end
+    if out.class=="random" then return out end
     if out.class and not string.find(";warrior;paladin;hunter;rogue;priest;shaman;mage;warlock;druid;",";" .. out.class .. ";",1,true) then return nil end
     if out.role and not string.find(";tank;healer;mdps;rdps;",";" .. out.role .. ";",1,true) then return nil end
     return out
@@ -2232,6 +2377,7 @@ function C.PeerClear(s, reason)
     s.raidWait=nil; s.raidServe=nil; s.raidOut=nil
     s.planInput=nil; s.planProposal=nil; s.planOut=nil
     s.handInput=nil; s.handProposal=nil; s.handOut=nil
+    s.quoteOut=nil; s.quoteSeen=nil; s.quoteHelloAt=nil
 end
 
 function C.PeerNonce(value)
@@ -3478,6 +3624,42 @@ function C.HandStepSlots(step)
     return first,last
 end
 
+-- Whether the plan sends any whisper to these rows (slot -> entry): a legacy row's own
+-- commands, or a deny or setup rule naming a row's class and role.
+function C.RowsNeedCommands(plan,own)
+    local subset={entries={},denyRules=plan.denyRules,setupRules=plan.setupRules}
+    local companions={}
+    for i=1,40 do
+        subset.entries[i]=own[i] or {kind="empty"}
+        if own[i] then table.insert(companions,{name="row" .. i,class=C.NormalizeClassLabel(own[i].class),role=C.NormalizeRoleLabel(own[i].role)}) end
+    end
+    for _,item in ipairs(C.BuildWhisperQueue(subset)) do
+        if item.phase=="role-class-final" or item.phase=="class-setup" then
+            if table.getn(C.MatchCompanionsScoped(companions,item.class,item.role,item.spec))>0 then return true end
+            for _,entry in pairs(own) do
+                for _,role in ipairs({"tank","healer","mdps","rdps"}) do
+                    if (item.role=="all" or C.NormalizeRoleLabel(item.role)==role)
+                        and C.RandomHireAllowsRole(entry,item.class,role) then return true end
+                end
+            end
+        else return true end
+    end
+    return false
+end
+
+-- The plan as Execute must act on it: a legacy row already in the group (present) that gets
+-- no whisper needs nothing from any account, so it is left out. Only for choosing actors.
+function C.PlanWithoutSettled(plan,present)
+    local out={entries={},denyRules=plan.denyRules,setupRules=plan.setupRules}
+    local slots=C.PresentLegacySlots(plan.entries,present)
+    for i=1,40 do
+        local e=plan.entries[i]
+        if slots[i] and not C.RowsNeedCommands(plan,{[i]=e}) then e={kind="empty"} end
+        out.entries[i]=e
+    end
+    return out
+end
+
 -- The actors of these hire steps whose rows get a command from the plan: a legacy row's
 -- own commands, or a deny or setup rule naming the row's class (and its role, unless the
 -- rule takes every role), as group commands expand. Ordered for the end of the run: the
@@ -3493,20 +3675,7 @@ function C.HandCommandActors(steps,plan)
             if type(e)=="table" and e.kind~="empty" then rows[key][i]=e end
         end
     end
-    local function needs(own)
-        local subset={entries={},denyRules=plan.denyRules,setupRules=plan.setupRules}
-        local companions={}
-        for i=1,40 do
-            subset.entries[i]=own[i] or {kind="empty"}
-            if own[i] then table.insert(companions,{name="row" .. i,class=C.NormalizeClassLabel(own[i].class),role=C.NormalizeRoleLabel(own[i].role)}) end
-        end
-        for _,item in ipairs(C.BuildWhisperQueue(subset)) do
-            if item.phase=="role-class-final" or item.phase=="class-setup" then
-                if table.getn(C.MatchCompanionsScoped(companions,item.class,item.role,item.spec))>0 then return true end
-            else return true end
-        end
-        return false
-    end
+    local function needs(own) return C.RowsNeedCommands(plan,own) end
     local out,lastKey={},table.getn(steps)>0 and string.lower(steps[table.getn(steps)].actor)
     for _,actor in ipairs(order) do
         if string.lower(actor)==lastKey and needs(rows[lastKey]) then table.insert(out,actor) end
@@ -3783,37 +3952,79 @@ function C.HandReceive(s,text,sender,links,wall,clock)
     return C.PlanReceive(s,text,sender,links,wall,clock,true)
 end
 
+-- Presentation only. Recognize a whole bounded packet, its direction and a saved
+-- peer approval; never touch live protocol state or use display as authorization.
+-- Saved approval also keeps late/duplicate packets quiet after a run has ended.
+function C.IsHandoffChatMessage(chatEvent,text,other,you,realm,links)
+    if (chatEvent~="CHAT_MSG_WHISPER" and chatEvent~="CHAT_MSG_WHISPER_INFORM")
+        or type(text)~="string" or string.len(text)>240 or string.sub(text,1,3)~="SRB"
+        or type(other)~="string" or type(you)~="string" or type(realm)~="string" then return false end
+    if C.QuoteParse(text) then
+        -- Quote envelopes use the whisper's own direction/realm, not redundant
+        -- labels. This is display-only; QuoteBound still validates the live link.
+        return C.IsSafeCharacterName(other) and C.IsSafeCharacterName(you) and C.LinkKnown(links,you,other,realm)
+    end
+    local p=C.HandParse(text)
+    if p then
+        -- Chunk parsers also accept incomplete transfers. A non-final chunk is
+        -- exactly 48 bytes; a single packet must hold a complete known message.
+        if (p.index<p.total and string.len(p.data)~=48)
+            or (p.total==1 and not C.HandDecode(p.data) and not C.HandShortParse(p.data)) then return false end
+    else
+        p=C.LinkParse(text)
+        if p then
+            if p.kind=="INVITE" or p.kind=="REJECT" then
+                if p.b~="-" then return false end
+            elseif p.b=="-" or p.b==p.a then return false end
+        else p=C.LicenseParse(text) or C.RaidParse(text) or C.AccountParse(text) end
+    end
+    if not p or p.realm~=realm then return false end
+    you=string.lower(you); other=string.lower(other)
+    if chatEvent=="CHAT_MSG_WHISPER" then
+        if p.sender~=other or p.target~=you then return false end
+    elseif p.sender~=you or p.target~=other then return false end
+    return C.LinkKnown(links,you,other,realm)
+end
+
 -- When one character hires from another on its account, the server may give either as the
 -- companion's owner: the hire-from character, or the character that sent the hire (hirer).
 -- This is the second case: NormalHireMatchesInfo with the hirer in the owner's place.
--- Callers try exact owners for every row first, so this never takes another row's match.
+-- Callers reserve concrete rows first, exact owners before hirers in both pools.
 function C.HandHiredBy(entry,record,hirer)
     if type(entry)~="table" or entry.kind~="normal" or not C.IsSafeCharacterName(hirer) then return false end
-    return C.NormalHireMatchesInfo({kind="normal",account=hirer,companionName=entry.companionName,class=entry.class,role=entry.role},record)
+    if C.IsRandomHire(entry) and not C.BuildNormalHireCommand(entry) then return false end
+    local hired={}; for key,value in pairs(entry) do hired[key]=value end
+    hired.account=hirer
+    return C.NormalHireMatchesInfo(hired,record)
 end
 
 -- Companions the run's earlier steps hired are not "already present" for a later step:
--- in step order, each earlier normal row takes its own one-to-one GRINFO match, exact
--- owners first, then one its step's actor owns (HandHiredBy). Commands steps hire nothing.
+-- earlier concrete rows keep their reservations; earlier random rows take only records
+-- the remaining concrete rows do not need. Commands steps hire nothing.
 function C.HandUnclaimed(h,info)
-    local used,out,open={},{},{}
-    for k=1,(h and h.step or 1)-1 do
-        local step=h.steps[k]
+    local used,out,concrete,pending,hirers,earlier={},{},{},{},{},{}
+    for k,step in ipairs(h and h.steps or {}) do
         local first,last=C.HandStepSlots(step)
-        for i=first or 1,last or 0 do
-            local found
-            for ri,r in ipairs(info) do
-                if not used[ri] and C.NormalHireMatchesInfo(h.plan.entries[i],r) then used[ri]=true; found=true; break end
-            end
-            if not found then table.insert(open,{slot=i,actor=step.actor}) end
+        for slot=first or 1,last or 0 do
+            local entry=h.plan.entries[slot]
+            hirers[slot]=step.actor
+            if k<(h.step or 1) then
+                earlier[slot]=true
+                if not C.IsRandomHire(entry) then concrete[slot]=entry else pending[slot]=entry end
+            else pending[slot]=entry end
         end
     end
-    for _,row in ipairs(open) do
-        for ri,r in ipairs(info) do
-            if not used[ri] and C.HandHiredBy(h.plan.entries[row.slot],r,row.actor) then used[ri]=true; break end
-        end
+    for _,row in pairs(C.MatchNormalHireEntries(concrete,info,hirers)) do used[string.lower(C.Trim(row.name))]=true end
+    local free={}
+    for _,row in ipairs(type(info)=="table" and info or {}) do
+        if type(row)=="table" and not used[string.lower(C.Trim(row.name))] then table.insert(free,row) end
     end
-    for ri,r in ipairs(info) do if not used[ri] then table.insert(out,r) end end
+    for slot,row in pairs(C.MatchNormalHireEntries(pending,free,hirers)) do
+        if earlier[slot] then used[string.lower(C.Trim(row.name))]=true end
+    end
+    for _,row in ipairs(type(info)=="table" and info or {}) do
+        if type(row)~="table" or not used[string.lower(C.Trim(row.name))] then table.insert(out,row) end
+    end
     return out
 end
 
@@ -3823,22 +4034,20 @@ end
 -- its hirer (HandHiredBy). A legacy row's companion is its -lite name: one you own in the
 -- records, or, when the records do not list it, a present group member.
 function C.HandScopeFound(entries,records,you,present,own)
-    local chosen,used,missing,open,lite,taken={},{},{},{},{},{}
-    for _,entry in pairs(entries) do
-        if entry.kind=="legacy" then lite[string.lower(C.GetLegacyWhisperName(entry))]=true end
+    local chosen,missing,available,hirers,taken={},{},{},{},{}
+    for _,row in ipairs(type(records)=="table" and records or {}) do
+        if type(row)=="table" and C.HandOwnsSource(C.Trim(row.owner),you,you,own) then table.insert(available,row) end
     end
-    -- A record with a legacy row's -lite name is never taken for a normal row.
-    for i,row in ipairs(records) do if lite[string.lower(row.name or "")] then used[i]=true end end
+    for _,slot in ipairs(C.NormalHireSlots(entries)) do
+        local entry=entries[slot]
+        if not C.IsRandomHire(entry) or C.HandOwnsSource(entry.account,you,you,own) then hirers[slot]=you end
+    end
+    local matched=C.MatchNormalHireEntries(entries,available,hirers)
+    for _,slot in ipairs(C.NormalHireSlots(entries)) do
+        if matched[slot] then table.insert(chosen,matched[slot]) else table.insert(missing,slot) end
+    end
     for slot,entry in pairs(entries) do
-        if entry.kind=="normal" then
-            local found
-            for i,row in ipairs(records) do
-                if not used[i] and C.HandOwnsSource(C.Trim(row.owner),you,you,own) and C.NormalHireMatchesInfo(entry,row) then
-                    table.insert(chosen,row); used[i]=true; found=true; break
-                end
-            end
-            if not found then table.insert(open,slot) end
-        elseif entry.kind=="legacy" then
+        if entry.kind=="legacy" then
             local target=C.GetLegacyWhisperName(entry)
             local found,observed
             for i,row in ipairs(records) do
@@ -3855,13 +4064,7 @@ function C.HandScopeFound(entries,records,you,present,own)
             if not found then table.insert(missing,slot) end
         end
     end
-    for _,slot in ipairs(open) do
-        local found
-        for i,row in ipairs(records) do
-            if not used[i] and C.HandHiredBy(entries[slot],row,you) then table.insert(chosen,row); used[i]=true; found=true; break end
-        end
-        if not found then table.insert(missing,slot) end
-    end
+
     table.sort(missing)
     return chosen,missing
 end
@@ -3911,4 +4114,1408 @@ function C.AccountReceive(s,text,sender,wall,clock)
     s.remoteLicense={source=p.sender,realm=p.realm,accountId=w.accountId,entries=rows,received=wall,observed=w.observed,authoritative=false}
     s.licenseWait=nil
     return true
+end
+
+-- Full planner: staged data only. No chat, live raid changes, trust or persistence here.
+C.PLANNER_CLASSES={"warrior","hunter","rogue","priest","shaman","mage","warlock","druid","paladin"}
+C.PLANNER_ROLES={"tank","healer","mdps","rdps"}
+C.PLANNER_RACES={
+    warrior={"orc","undead","tauren","troll","human","gnome","nightelf","dwarf"},
+    hunter={"orc","tauren","troll","nightelf","dwarf"},rogue={"orc","undead","troll","human","gnome","nightelf","dwarf"},
+    priest={"undead","troll","human","nightelf","dwarf"},shaman={"orc","tauren","troll"},mage={"undead","troll","human","gnome"},
+    warlock={"orc","undead","human","gnome"},druid={"tauren","nightelf"},paladin={"human","dwarf"},
+}
+
+function C.PlannerCopy(value)
+    if type(value)~="table" then return value end
+    local out={}; for k,v in pairs(value) do out[k]=C.PlannerCopy(v) end; return out
+end
+
+function C.PlannerEqual(a,b)
+    if type(a)~=type(b) then return false end
+    if type(a)~="table" then return a==b end
+    for k,v in pairs(a) do if not C.PlannerEqual(v,b[k]) then return false end end
+    for k in pairs(b) do if a[k]==nil then return false end end
+    return true
+end
+
+function C.PlannerHas(values,value)
+    for _,v in ipairs(values or {}) do if v==value then return true end end
+    return false
+end
+
+-- Builder licence order follows BuildLicenseOptions: all dungeon tiers, then raid
+-- tiers. Never sort token text or treat unknown licences as the base licence.
+function C.PlannerTierRank(tier)
+    for i,v in ipairs({"t0d","t1d","t2d","t3d","t4d","t5d","t1r","t2r","t3r","t4r","t5r"}) do
+        if tier==v then return i-1 end
+    end
+end
+
+function C.PlannerHighestTier(source)
+    if not source or not source.eligible then return nil end
+    local best,rank=nil,-1
+    for _,tier in ipairs(source.tiers or {}) do
+        local r=C.PlannerTierRank(tier)
+        if r and r>rank then best=tier; rank=r end
+    end
+    return best
+end
+
+C.PLANNER_PRIORITY={"tank","mdps","mage","warlock","rdps","healer"}
+C.PLANNER_PRIORITY_LABELS={tank="Tanks",mdps="Melee DPS",mage="Mage",warlock="Warlock",rdps="RDPS",healer="Healers"}
+
+function C.PlannerAutoOrder()
+    local out={}
+    for _,bucket in ipairs(C.PLANNER_PRIORITY) do
+        for _,class in ipairs(C.PLANNER_CLASSES) do
+            for _,role in ipairs(C.PLANNER_ROLES) do
+                if C.RoleAllowedForClass(class,role) and C.PlannerBucket({class=class,role=role})==bucket then table.insert(out,class..":"..role) end
+            end
+        end
+    end
+    return out
+end
+
+function C.PlannerValidPriority(order)
+    if type(order)~="table" or table.getn(order)==0 then return nil end
+    local seen,out,allowed={}, {}, {}
+    local defaults=C.PlannerAutoOrder(); for _,id in ipairs(defaults) do allowed[id]=true end
+    local bucketOrder=C.PLANNER_PRIORITY_LABELS[order[1]]~=nil
+    local n=table.getn(order)
+    for k,v in pairs(order) do
+        if type(k)~="number" or k~=math.floor(k) or k<1 or k>n or type(v)~="string" or seen[v] then return nil end
+        if not (bucketOrder and C.PLANNER_PRIORITY_LABELS[v] or not bucketOrder and allowed[v]) then return nil end
+        seen[v]=true
+    end
+    for i=1,n do if type(order[i])~="string" then return nil end end
+    if bucketOrder then
+        -- Migrate the interim four/six-bucket order, expanding at its old position.
+        if n~=4 and n~=6 then return nil end
+        if not seen.tank or not seen.mdps or not seen.rdps or not seen.healer or (n==6 and (not seen.mage or not seen.warlock)) or (n==4 and (seen.mage or seen.warlock)) then return nil end
+        for _,bucket in ipairs(order) do
+            for _,id in ipairs(defaults) do
+                local _,_,class,role=string.find(id,"^(%a+):(%a+)$")
+                local b=C.PlannerBucket({class=class,role=role})
+                if b==bucket or (n==4 and bucket=="rdps" and (b=="mage" or b=="warlock")) then table.insert(out,id) end
+            end
+        end
+    else
+        for _,id in ipairs(order) do table.insert(out,id) end
+        -- New supported combinations append in stable Auto order; stale/duplicate IDs
+        -- reject the whole order rather than silently dropping a priority.
+        for _,id in ipairs(defaults) do if not seen[id] then table.insert(out,id) end end
+    end
+    return out
+end
+
+function C.PlannerLoadPriority(state)
+    local order=type(state)=="table" and C.PlannerValidPriority(state.customOrder)
+    local mode=order and state.priorityMode=="custom" and "custom" or "auto"
+    return mode,order or C.PlannerAutoOrder()
+end
+
+function C.PlannerPriorityOrder(request)
+    local mode,order=C.PlannerLoadPriority(request)
+    return mode=="custom" and order or C.PlannerAutoOrder()
+end
+
+function C.PlannerPriorityLabel(id)
+    if C.PLANNER_PRIORITY_LABELS[id] then return C.PLANNER_PRIORITY_LABELS[id] end
+    local _,_,class,role=string.find(tostring(id),"^(%a+):(%a+)$")
+    local label={tank="Tank",mdps="Melee DPS",rdps="Ranged DPS",healer="Healer"}
+    if class and label[role] then return string.upper(string.sub(class,1,1))..string.sub(class,2).." "..label[role] end
+    return "Unknown priority"
+end
+
+function C.PlannerBucket(entry)
+    if not entry then return nil end
+    if entry.role=="rdps" then
+        if entry.class=="mage" or entry.class=="warlock" then return entry.class end
+        return "rdps"
+    end
+    if entry.role=="tank" or entry.role=="mdps" or entry.role=="healer" then return entry.role end
+end
+
+-- Preferences are inert choices, never ownership or spending authority. Realm and
+-- both account identities stay separate from display labels and live endpoints.
+function C.PlannerPreferenceState(db,realm,create)
+    if type(db)~="table" or not C.AccountIdentity(db.syncAccountId) or type(realm)~="string" or realm=="" then return nil end
+    if type(db.plannerPreferences)~="table" or db.plannerPreferences.version~=1 then
+        if not create then return nil end
+        db.plannerPreferences={version=1,accounts={}}
+    end
+    local root=db.plannerPreferences
+    if type(root.accounts)~="table" then if not create then return nil end; root.accounts={} end
+    if type(root.accounts[db.syncAccountId])~="table" then if not create then return nil end; root.accounts[db.syncAccountId]={} end
+    local account=root.accounts[db.syncAccountId]
+    if type(account[realm])~="table" then if not create then return nil end; account[realm]={} end
+    return account[realm]
+end
+
+function C.PlannerPreferenceIdentity(source)
+    if type(source)~="table" or not C.AccountIdentity(source.accountId) or not C.IsSafeCharacterName(source.name) then return nil end
+    return (source.localSource and "own:" or "linked:")..source.accountId..":"..string.lower(source.name)
+end
+
+function C.PlannerRestoreSources(db,realm,sources)
+    local state=C.PlannerPreferenceState(db,realm,false)
+    local saved=state and type(state.sources)=="table" and state.sources or {}
+    local out,present,stale={}, {},0
+    for _,source in ipairs(sources or {}) do
+        local identity=C.PlannerPreferenceIdentity(source); if identity then present[identity]=true end
+        local old=identity and type(saved[identity])=="table" and saved[identity] or {}
+        local tier=C.PlannerTierRank(old.tier) and old.tier or C.PlannerHighestTier(source)
+        local role=source.legacyClass and C.RoleAllowedForClass(source.legacyClass,old.legacyRole) and old.legacyRole or nil
+        out[source.key]={selected=old.selected==true,includeLegacy=old.includeLegacy==true,tier=tier,legacyRole=role}
+    end
+    for identity,old in pairs(saved) do
+        if not present[identity] and type(old)=="table" and (old.selected==true or old.includeLegacy==true) then stale=stale+1 end
+    end
+    return out,stale
+end
+
+function C.PlannerSaveSource(db,realm,source,selection)
+    local identity=C.PlannerPreferenceIdentity(source)
+    if not identity or type(selection)~="table" then return false end
+    local state=C.PlannerPreferenceState(db,realm,true); if not state then return false end
+    if type(state.sources)~="table" then state.sources={} end
+    state.sources[identity]={selected=selection.selected==true,includeLegacy=selection.includeLegacy==true,
+        tier=C.PlannerTierRank(selection.tier) and selection.tier or nil,
+        legacyRole=source.legacyClass and C.RoleAllowedForClass(source.legacyClass,selection.legacyRole) and selection.legacyRole or nil}
+    return true
+end
+
+function C.PlannerSavePriority(db,realm,request)
+    local state=C.PlannerPreferenceState(db,realm,true); if not state then return false end
+    state.priorityMode,state.customOrder=C.PlannerLoadPriority(request)
+    return true
+end
+
+-- Uses only this account's established rows and validated trusted snapshots. Snapshot
+-- licences describe planning choices, never authority to spend on an offline peer.
+function C.PlannerSources(db,you,realm,ownRows,licenses,sessions,wall,clock)
+    -- A partially restored live table must not hide remembered linked accounts.
+    -- Validate before resolving identity; malformed or noncanonical claims add no authority.
+    local trusted={}
+    for _,pool in ipairs({type(db.peerSnapshots)=="table" and db.peerSnapshots or {},type(licenses)=="table" and licenses or {}}) do
+        for key,raw in pairs(pool) do
+            local copy=C.AccountSavedCopy(raw,you,realm,db.peerLinks)
+            if copy and key==realm..";"..copy.source then
+                local previous=trusted[key]
+                if not previous or copy.received>previous.received or (copy.received==previous.received and copy.observed>=previous.observed) then trusted[key]=copy end
+            end
+        end
+    end
+    licenses=trusted
+    local out,own,remote={}, {}, C.HandRemoteSources(licenses,db.peerLinks,you,realm,sessions,wall,clock)
+    local byIdentity={}
+    for _,e in ipairs(ownRows or {}) do
+        local row=C.AccountRowCopy(e)
+        if row then
+            local key=string.lower(row.name); own[key]=true
+            byIdentity["own:"..key]={key="own:"..key,name=row.name,accountId=db.syncAccountId,endpoint=you,localSource=true,record=row}
+        end
+    end
+    for _,raw in pairs(licenses or {}) do
+        local r=C.AccountSavedCopy(raw,you,realm,db.peerLinks)
+        if r then
+            for _,e in ipairs(r.entries) do
+                local key=string.lower(e.name); local claim=remote[key]
+                local identity=r.accountId..":"..key
+                local current=byIdentity[identity]
+                if not current or e.observed>current.record.observed or (e.observed==current.record.observed and r.source<(current.snapshotSource or "~")) then
+                    local resolved=type(claim)=="table" and claim.accountId==r.accountId
+                    byIdentity[identity]={key=identity,name=e.name,accountId=r.accountId,endpoint=resolved and claim.endpoint or nil,
+                        record=C.PlannerCopy(e),received=r.received,snapshotSource=r.source,conflict=not resolved or own[key]==true}
+                end
+            end
+        end
+    end
+    for _,s in pairs(byIdentity) do
+        local key=string.lower(s.name)
+        s.faction=C.KnownFaction(s.record.faction); s.capacity=4
+        s.legacyClass=C.LegacyCharacterClass(db,s.name)
+        s.legacyRole=s.legacyClass and C.LegacyCharacterRole(db,s.name,s.legacyClass)
+        local d,r=s.record.dungeonLicense,s.record.raidLicense
+        if d~="unknown" and r~="unknown" and C.LicenseTokens(d,r) then s.tiers=C.BuildLicenseOptions(d,r) end
+        s.freshness="remembered"
+        -- AccountReadLocal may seed an observation timestamp from a remembered list.
+        -- Age describes the stored record, not fresh server eligibility or spend consent.
+        if type(wall)=="number" and s.record.observed<=wall and wall-s.record.observed<=300 then s.freshness="recent record; eligibility not live-checked" end
+        s.live=false
+        if not s.localSource then
+            for _,session in pairs(sessions or {}) do
+                local state=session.state
+                if state and string.lower(state.peer or "")==string.lower(s.endpoint or "")
+                    and C.PlanAuthorized(state,db.peerLinks,wall,clock) and state.remoteLicense
+                    and state.remoteLicense.accountId==s.accountId then s.live=true end
+            end
+        end
+        -- The local server list may know a stricter remaining normal-hire budget.
+        if s.localSource then
+            for _,record in pairs(db.inviteCharacters or {}) do
+                if type(record)=="table" and string.lower(C.Trim(record.name))==key then
+                    if C.RaidNumber(record.count,0,40) and C.RaidNumber(record.maxCount,0,40) then
+                        s.capacity=math.max(0,math.min(4,record.maxCount-record.count)); s.availabilityKnown=true
+                    end
+                end
+            end
+        end
+        s.eligible=true
+        if s.conflict or remote[key]==false or (own[key] and remote[key]~=nil) then s.conflict=true; s.eligible=false; s.reason="account identity is ambiguous"
+        elseif not s.tiers then s.eligible=false; s.reason="licences unknown; refresh account data"
+        elseif not s.faction then s.eligible=false; s.reason="faction unknown; refresh account data"
+        elseif s.capacity<1 then s.eligible=false; s.reason="no known normal-hire capacity" end
+        table.insert(out,s)
+    end
+    table.sort(out,function(a,b)
+        if (a.localSource==true)~=(b.localSource==true) then return a.localSource==true end
+        if a.accountId~=b.accountId then return tostring(a.accountId or "")<tostring(b.accountId or "") end
+        if string.lower(a.name)~=string.lower(b.name) then return string.lower(a.name)<string.lower(b.name) end
+        return a.key<b.key
+    end)
+    return out
+end
+
+-- User preferences, not claims about racial damage or server abilities. MCP's
+-- normal-race selector explicitly supports Dwarf Paladins on this target.
+function C.PlannerPreferredRace(faction,class,role)
+    local choices
+    if faction=="Alliance" then
+        choices={warrior="human",mage="gnome",warlock="gnome",hunter="nightelf",druid="nightelf",rogue="human"}
+        if role=="healer" then choices.priest="dwarf";choices.paladin="dwarf" end
+    elseif faction=="Horde" then
+        choices={warlock="orc",mage="troll",hunter="troll",rogue="troll"}
+        if class=="warrior" then choices.warrior=role=="tank" and "undead" or "orc" end
+        if role=="healer" then choices.shaman="troll" end
+    end
+    local race=choices and choices[class]
+    if C.PlannerHas(C.PLANNER_RACES[class],race) then return race end
+end
+
+function C.PlannerRaceDefaults(base,preferences)
+    local out={}
+    for _,class in ipairs(C.PLANNER_CLASSES) do out[class]={race="auto",spec="auto",roles={},captured={}} end
+    -- Preserve each captured concrete choice for its full source/class/role,
+    -- including mixed races. Only additional rows use the missing preferred default.
+    for _,e in ipairs(base.entries or {}) do
+        if e.kind=="normal" and out[e.class] and C.RoleAllowedForClass(e.class,e.role) and C.PlannerHas(C.PLANNER_RACES[e.class],e.race) then
+            local d=out[e.class];local key=string.lower(e.account or "")..":"..e.role
+            d.captured[key]=d.captured[key] or {};table.insert(d.captured[key],e.race)
+        end
+    end
+    local saved=type(preferences)=="table" and preferences.raceDefaults
+    if type(saved)~="table" then saved={} end
+    for class,d in pairs(saved) do
+        if out[class] and type(d)=="table" then
+            if d.race=="auto" or C.PlannerHas(C.PLANNER_RACES[class],d.race) then out[class].race=d.race end
+            for role,race in pairs(type(d.roles)=="table" and d.roles or {}) do
+                if C.RoleAllowedForClass(class,role) and (race=="auto" or C.PlannerHas(C.PLANNER_RACES[class],race)) then out[class].roles[role]=race end
+            end
+        end
+    end
+    return out
+end
+
+function C.PlannerNormal(source,class,role,request,index)
+    local defaults=type(request.defaults)=="table" and request.defaults[class] or {}
+    defaults=type(defaults)=="table" and defaults or {}
+    local chosen
+    if type(defaults.roles)=="table" then chosen=defaults.roles[role] end
+    if chosen==nil or chosen=="auto" then chosen=defaults.race or request.race end
+    if chosen==nil or chosen=="auto" then
+        local captured=type(defaults.captured)=="table" and defaults.captured[string.lower(source.name or "")..":"..role]
+        if type(captured)=="table" then chosen=captured[index or 1] else chosen=nil end
+    end
+    if chosen==nil or chosen=="auto" then chosen=C.PlannerPreferredRace(source.faction,class,role) end
+    request={race=chosen,spec=defaults.spec or request.spec,gender=defaults.gender or request.gender}
+    if not C.RoleAllowedForClass(class,role) or not C.KnownFaction(source.faction) or not C.ClassAllowedForFaction(class,source.faction) then return nil end
+    local race
+    for _,r in ipairs(C.PLANNER_RACES[class] or {}) do
+        local alliance=r=="human" or r=="dwarf" or r=="gnome" or r=="nightelf"
+        if (alliance and source.faction=="Alliance") or (not alliance and source.faction=="Horde") then
+            if request.race==nil or request.race=="auto" or request.race==r then race=r; break end
+        end
+    end
+    if not race then return nil end
+    local specs=C.SpecsForClassRole(class,role) or (class=="mage" and {"frost","fire","arcane"}) or {"default"}
+    local spec=request.spec
+    -- Only Mage/Paladin have a class profile choice. Hidden stale preferences must
+    -- not force other classes (or a healing Paladin) away from their sole default.
+    if (class~="mage" and class~="paladin") or (class=="paladin" and role=="healer") then spec="default" end
+    if spec==nil or spec=="auto" then spec=specs[1] end
+    if not C.PlannerHas(specs,spec) then return nil end
+    local gender=request.gender or "male"
+    if gender~="male" and gender~="female" then return nil end
+    return {kind="normal",account=source.name,tier=source.chosenTier,class=class,role=role,spec=spec,race=race,gender=gender}
+end
+
+-- Lexicographic costs keep bucket/atomic priorities exact without huge numeric
+-- weights: fewest fourth hires, each tier priority, then same-tier source balance.
+-- Residual paths still repair faction/race bottlenecks; chosen tiers never change.
+function C.PlannerCostAdd(a,b)
+    local out={}; for i=1,table.getn(a) do out[i]=a[i]+b[i] end; return out
+end
+
+function C.PlannerCostLess(a,b)
+    if not b then return true end
+    for i=1,table.getn(a) do if a[i]~=b[i] then return a[i]<b[i] end end
+    return false
+end
+
+-- Read-only quote protocol v1. The real whisper sender, current player/realm,
+-- saved approval and BOTH live link nonces bind the envelope. Account IDs are
+-- opaque approved peer claims, never server account authentication. No commands
+-- or executable payloads travel here. Split prices/metadata to stay <=240 bytes.
+function C.QuoteParse(text)
+    if type(text)~="string" or string.len(text)>240 then return nil end
+    local f={}; for v in string.gfind(text..";","([^;]*);") do table.insert(f,v) end
+    if table.getn(f)~=10 or f[1]~="SRBQUOTE1" or not C.PeerNonce(f[3]) or not C.PeerNonce(f[4]) or f[3]==f[4]
+        or not C.PeerNonce(f[5]) or not C.AccountIdentity(f[6]) or not C.AccountIdentity(f[7]) or f[6]==f[7]
+        or not C.IsSafeCharacterName(f[8]) or not C.PlannerTierRank(f[9]) then return nil end
+    local p={kind=f[2],a=f[3],b=f[4],nonce=f[5],requester=f[6],owner=f[7],name=f[8],tier=f[9],data=f[10]}
+    if p.kind=="H" or p.kind=="G" or p.kind=="C" then if p.data~="-" then return nil end
+    elseif p.kind=="A" then if p.data~="1" then return nil end
+    elseif p.kind=="E" then
+        if not ({BUSY=true,MCP=true,TIMEOUT=true,ACCOUNT=true,SOURCE=true,STALE=true,RATE=true,SIZE=true,INVALID=true})[p.data] then return nil end
+    elseif p.kind=="P" then
+        local _,_,base,ex,qbase,qex=string.find(p.data,"^(%d+):(%d+):(%d+):(%d+)$")
+        if not base then return nil end
+        p.price={base=tonumber(base),ex=tonumber(ex),qbase=tonumber(qbase),qex=tonumber(qex)}
+        for _,v in pairs(p.price) do if not C.RaidNumber(v,0,2147483647) then return nil end end
+    elseif p.kind=="M" then
+        local _,_,mask,friendly,count,maximum,observed=string.find(p.data,"^(%w+):(%w+):(%d+):(%d+):(%d+)$")
+        if not mask or string.len(mask)>12 or string.len(friendly)>12 then return nil end
+        p.meta={mask=mask,friendly=friendly,count=tonumber(count),max=tonumber(maximum),observed=tonumber(observed)}
+        if not C.RaidNumber(p.meta.count,0,40) or not C.RaidNumber(p.meta.max,0,40) or p.meta.count>p.meta.max
+            or not C.RaidNumber(p.meta.observed,1,2147483647) then return nil end
+    else return nil end
+    return p
+end
+
+function C.QuotePacket(s,kind,w,data)
+    if not s or not w then return nil end
+    local text=table.concat({"SRBQUOTE1",kind,s.a or "-",s.b or "-",w.nonce or "-",w.requester or "-",w.owner or "-",w.name or "-",w.tier or "-",data or "-"},";")
+    if C.QuoteParse(text) then return text end
+end
+
+function C.QuoteSame(a,b)
+    return a and b and a.nonce==b.nonce and a.requester==b.requester and a.owner==b.owner
+        and string.lower(a.name or "")==string.lower(b.name or "") and a.tier==b.tier
+end
+
+-- Exact installed MCP COST:INVITE schema. It quotes the NEXT hire only; no
+-- subsequent count curve, per-account multiplier or total-price formula is known.
+function C.PlannerQuoteParse(message)
+    if type(message)~="string" or string.len(message)>240 then return nil end
+    local _,_,name,base,extra,mask,friendly,qbase,qextra,count,maximum=string.find(message,"^%[nexus%] ACINFO:COST:INVITE ([^:%s]+):(%d+):(%d+):(%w+):(%w+):(%d+):(%d+):(%d+):(%d+)$")
+    if not C.IsSafeCharacterName(name) or not mask or string.len(mask)>12 or string.len(friendly)>12 then return nil end
+    local q={name=name,base=tonumber(base),ex=tonumber(extra),mask=mask,friendly=friendly,qbase=tonumber(qbase),qex=tonumber(qextra),count=tonumber(count),max=tonumber(maximum)}
+    for _,field in ipairs({"base","ex","qbase","qex"}) do if not C.RaidNumber(q[field],0,2147483647) then return nil end end
+    if not C.RaidNumber(q.count,0,40) or not C.RaidNumber(q.max,0,40) or q.count>q.max then return nil end
+    return q
+end
+
+-- Actual discounted next quotes do not establish later effective discounts.
+-- Reputation depends on source character and chosen race. Keep every future
+-- discounted amount unknown rather than carrying a current discount forward.
+function C.PlannerQuoteMarginal(q,price,offset)
+    if type(q)~="table" or offset~=0 or not C.RaidNumber(price,0,2147483647)
+        or not C.RaidNumber(q.count,0,40) or not C.RaidNumber(q.max,1,40) or q.count>=q.max then return nil end
+    return price
+end
+
+-- Match MCP_CostPick/MCP_QuickCost without reading or changing MCP globals.
+function C.PlannerPricePick(q,row)
+    if type(q)~="table" or type(row)~="table" or type(q.mask)~="string" then return nil end
+    local exalted=false
+    -- Saved role-only Quick rows leave race unset; the selector's random token
+    -- is also accepted as a query context, never persisted as a concrete race.
+    local quick=row.class=="random"
+    if quick and row.race~=nil and row.race~="random" then return nil end
+    if quick then
+        if type(q.friendly)~="string" or q.friendly=="" then return nil end
+        exalted=q.friendly~="0"
+        for i=1,string.len(q.friendly) do
+            if not string.find(q.mask,string.sub(q.friendly,i,i),1,true) then exalted=false end
+        end
+    else
+        local digits={human="1",orc="2",dwarf="3",nightelf="4",undead="5",tauren="6",gnome="7",troll="8"}
+        local digit=digits[row.race];if not digit then return nil end
+        exalted=string.find(q.mask,digit,1,true)~=nil
+    end
+    local price
+    if quick then if exalted then price=q.qex else price=q.qbase end
+    else if exalted then price=q.ex else price=q.base end end
+    if C.RaidNumber(price,0,2147483647) then return price end
+end
+
+function C.PlannerMoney(copper)
+    if not C.RaidNumber(copper,0,85899345880) then return "unknown" end
+    local gold=math.floor(copper/10000);local silver=math.floor(math.mod(copper,10000)/100);local small=math.mod(copper,100)
+    local text={}
+    if gold>0 then table.insert(text,gold.."g") end
+    if silver>0 then table.insert(text,silver.."s") end
+    if small>0 or table.getn(text)==0 then table.insert(text,small.."c") end
+    return table.concat(text," ")
+end
+
+-- Empirical remaining marginal curve, calibrated to THIS source/selected race
+-- and licence's fresh next quote. This is an estimate, not a future server quote.
+-- Count belongs to the named character (MCP Invite row), never its whole account.
+-- Only the observed four-normal scope is supported; no fifth-hire extrapolation.
+function C.PlannerEstimateMarginal(q,price,offset)
+    local curve={2,3,5,10} -- exactly 1 / 1.5 / 2.5 / 5 without float constants
+    if type(q)~="table" or q.max~=4 or not C.RaidNumber(q.count,0,3)
+        or not C.RaidNumber(offset,0,3) or q.count+offset>3 or not C.RaidNumber(price,0,2147483647) then return nil end
+    local estimate=math.floor(price*curve[q.count+offset+1]/curve[q.count+1]+0.5)
+    if C.RaidNumber(estimate,0,2147483647) then return estimate end
+end
+
+-- One metadata read per full source/licence used by the visible saved plan.
+-- Row order is never rewritten; a licence change does not reset its hire ordinal.
+function C.VisiblePriceRows(plan,sources)
+    local names,rows,seen={}, {},{}
+    for _,s in ipairs(sources or {}) do
+        local name=string.lower(s.name or "")
+        if names[name]~=nil then names[name]=false else names[name]=s end
+    end
+    for i=1,40 do
+        local e=plan.entries[i]
+        if e and e.kind=="normal" then
+            local s=names[string.lower(e.account or "")]
+            if s and s.eligible and not s.conflict and C.AccountIdentity(s.accountId)
+                and C.IsSafeCharacterName(s.name) and C.PlannerHas(s.tiers,e.tier) and C.BuildNormalHireCommand(e) then
+                local key=s.key..":"..e.tier
+                if not seen[key] then
+                    seen[key]=true;table.insert(rows,{source=C.PlannerCopy(s),tier=e.tier,key=key})
+                end
+            end
+        end
+    end
+    return rows
+end
+
+function C.PlannerEstimate(result,sources,request)
+    local byName,byKey,offsets,counts,bad={}, {},{}, {},{}
+    local total={totalCopper=0,known=0,unknown=0,complete=true}
+    for _,s in ipairs(sources or {}) do
+        local key=string.lower(s.name or "")
+        if byName[key]~=nil then byName[key]=false else byName[key]=s end
+    end
+    if request.planQuotes then
+        for i=1,40 do
+            local e=result.plan.entries[i]
+            local s=e and e.kind=="normal" and byName[string.lower(e.account or "")]
+            local q=s and request.planQuotes[s.key..":"..tostring(e.tier)]
+            if type(q)=="table" then
+                local old=counts[s.key]
+                if old and (old.count~=q.count or old.max~=q.max) then bad[s.key]=true end
+                counts[s.key]=q
+            end
+        end
+    end
+    for _,a in ipairs(result.allocation or {}) do a.estimatedCopper=0;a.priced=0;a.unpriced=0;byKey[a.key]=a end
+    -- Final saved slot order is the order Execute sees. Offsets are per CHARACTER,
+    -- including earlier unpriced rows, and continue across that character's tiers.
+    for i=1,40 do
+        local row=result.plan.entries[i]
+        if row and row.kind=="normal" then
+            local s=byName[string.lower(row.account or "")];local value
+            local q=s and request.quotes and request.quotes[s.key]
+            if s and request.planQuotes then q=request.planQuotes[s.key..":"..tostring(row.tier)] end
+            local a=s and byKey[s.key]
+            local offset=s and (offsets[s.key] or 0)
+            if s then offsets[s.key]=offset+1 end
+            if type(q)~="table" then q=nil end
+            if q and not bad[s.key] then
+                local tier=request.planQuotes and row.tier or s.chosenTier or (request.sources[s.key] and request.sources[s.key].tier)
+                if q.accountId==s.accountId and string.lower(q.name or "")==string.lower(s.name) and q.tier==tier and row.tier==tier
+                    and (not request.planQuotes or (not s.conflict and s.eligible and C.PlannerHas(s.tiers,tier) and C.BuildNormalHireCommand(row)))
+                    and type(request.quoteNow)=="number" and type(q.received)=="number" and request.quoteNow>=q.received and request.quoteNow-q.received<=30 then
+                    value=C.PlannerEstimateMarginal(q,C.PlannerPricePick(q,row),offset)
+                end
+            end
+            if value~=nil then
+                total.totalCopper=total.totalCopper+value;total.known=total.known+1
+                if a then a.estimatedCopper=a.estimatedCopper+value;a.priced=a.priced+1 end
+            else
+                total.unknown=total.unknown+1;total.complete=false
+                if a then a.unpriced=a.unpriced+1 end
+            end
+        end
+    end
+    result.estimate=total;return total
+end
+
+function C.PlannerQuotedPrice(source,jobs,request)
+    if not request.quotes or table.getn(jobs)==0 then return nil end
+    local q=request.quotes[source.key]
+    if type(q)~="table" or string.lower(q.name or "")~=string.lower(source.name) or q.tier~=source.chosenTier or q.accountId~=source.accountId
+        or type(request.quoteNow)~="number" or type(q.received)~="number" or request.quoteNow<q.received or request.quoteNow-q.received>30
+        or not C.RaidNumber(q.count,0,40) or not C.RaidNumber(q.max,0,40) or q.count>=q.max then return nil,"A selected character's price/count is missing, stale or changed. Build again to check prices." end
+    local price,prices=nil,{}
+    for _,job in ipairs(jobs) do
+        local row=C.PlannerNormal(source,job.class,job.role,request)
+        if row then
+            local cost=C.PlannerPricePick(q,row)
+            if cost==nil then return nil,"The server quote does not describe this race/price safely." end
+            prices[job.class..":"..job.role]=cost
+            price=price and math.min(price,cost) or cost
+        end
+    end
+    return price,nil,math.max(0,math.min(4,q.max-q.count)),prices
+end
+
+function C.PlannerAllocate(jobs,sources,request)
+    local graph={}
+    local order=C.PlannerPriorityOrder(request)
+    local priority={}; for i,id in ipairs(order) do priority[id]=i+12 end
+    local zero={}; for i=1,table.getn(order)+16 do zero[i]=0 end
+    for _,source in ipairs(sources) do
+        local price,why,capacity,prices=C.PlannerQuotedPrice(source,jobs,request)
+        if why then return nil,why end
+        source.nextPrice=price;source.nextPrices=prices;source.quoteCount=0
+        local q=request.quotes and request.quotes[source.key]
+        if q and q.max==4 then source.quoteCount=q.count end
+        if capacity then source.capacity=math.min(source.capacity or 4,capacity) end
+    end
+    local bestRank=0; for _,s in ipairs(sources) do bestRank=math.max(bestRank,C.PlannerTierRank(s.chosenTier) or 0) end
+    local sink=2+table.getn(jobs)+table.getn(sources)
+    for i=1,sink do graph[i]={} end
+    local function edge(a,b,capacity,cost)
+        local reverse={}; for i=1,table.getn(cost) do reverse[i]=-cost[i] end
+        local x={to=b,cap=capacity,cost=cost,rev=table.getn(graph[b])+1}
+        local y={to=a,cap=0,cost=reverse,rev=table.getn(graph[a])+1}
+        table.insert(graph[a],x); table.insert(graph[b],y); return x
+    end
+    local links,total={},0
+    for i,job in ipairs(jobs) do
+        edge(1,1+i,job.count,zero); links[i]={}; total=total+job.count
+        for j,source in ipairs(sources) do
+            if C.PlannerNormal(source,job.class,job.role,request) then
+                local cost=C.PlannerCopy(zero)
+                local rank=C.PlannerTierRank(source.chosenTier) or 0
+                cost[12-rank]=-1 -- strongest chosen licences first, then the next
+                cost[priority[job.class..":"..job.role]]=bestRank-rank
+                -- Source/race-specific NEXT-price benchmark, never a later-hire
+                -- estimate or promised total. Quality priorities remain first.
+                cost[table.getn(cost)-2]=source.nextPrices and source.nextPrices[job.class..":"..job.role] or 0
+                links[i][j]=edge(1+i,1+table.getn(jobs)+j,job.count,cost)
+            end
+        end
+    end
+    for j,s in ipairs(sources) do
+        for n=1,math.min(4,s.capacity or 4) do
+            local cost=C.PlannerCopy(zero)
+            local fourth=s.quoteCount+n==4
+            cost[1]=request.saveGold~=false and fourth and 1 or 0
+            -- Prefer covering actual next-quote ordinals before unknown later
+            -- ordinals; next-price benchmarks on job edges break remaining ties.
+            cost[table.getn(cost)-3]=s.nextPrice~=nil and n>1 and 1 or 0
+            cost[table.getn(cost)-1]=fourth and 1 or 0
+            cost[table.getn(cost)]=n-1
+            edge(1+table.getn(jobs)+j,sink,1,cost)
+        end
+    end
+    for sent=1,total do
+        local dist,from,which={[1]=zero},{},{}
+        for pass=1,sink-1 do
+            local changed=false
+            for a=1,sink do
+                if dist[a] then
+                    for k,e in ipairs(graph[a]) do
+                        if e.cap>0 then
+                            local candidate=C.PlannerCostAdd(dist[a],e.cost)
+                            if C.PlannerCostLess(candidate,dist[e.to]) then
+                                dist[e.to]=candidate; from[e.to]=a; which[e.to]=k; changed=true
+                            end
+                        end
+                    end
+                end
+            end
+            if not changed then break end
+        end
+        if not dist[sink] then return nil,"Selected sources cannot supply the requested counts at those tiers/factions/race/spec settings (maximum four normals per source). Select more eligible sources or reduce counts." end
+        local at=sink
+        while at~=1 do
+            local a=from[at]; local e=graph[a][which[at]]
+            e.cap=e.cap-1; graph[at][e.rev].cap=graph[at][e.rev].cap+1; at=a
+        end
+    end
+    local rows,allocation={},{}
+    for j,s in ipairs(sources) do allocation[j]={key=s.key,name=s.name,tier=s.chosenTier,count=0} end
+    for i,job in ipairs(jobs) do
+        for j,s in ipairs(sources) do
+            local e=links[i][j]
+            local count=e and graph[e.to][e.rev].cap or 0
+            allocation[j].count=allocation[j].count+count
+            local price=s.nextPrices and s.nextPrices[job.class..":"..job.role]
+            if count>0 and price~=nil then
+                local a=allocation[j]
+                a.nextMin=a.nextMin and math.min(a.nextMin,price) or price
+                a.nextMax=a.nextMax and math.max(a.nextMax,price) or price
+            end
+            for n=1,count do
+                local row=C.PlannerNormal(s,job.class,job.role,request,n)
+                if not row then return nil,"A captured race is no longer valid for its source/class/role. Choose a valid race before Build." end
+                table.insert(rows,row)
+            end
+        end
+    end
+    for j,s in ipairs(sources) do
+        local a=allocation[j];a.fourth=a.count>0 and s.quoteCount+a.count==4
+        a.nextPrice=a.nextMin==a.nextMax and a.nextMin or nil;a.existingCount=s.quoteCount
+
+    end
+    return rows,allocation
+end
+
+-- Price the actual grouped slot order. Ultra changes only a normal row's
+-- selected source/licence and its valid defaults; class/role and every slot stay.
+function C.PlannerUltraMetrics(entries,sources,request)
+    local result={plan={entries=entries},allocation={}};local names={}
+    for _,s in ipairs(sources) do
+        local q=request.quotes[s.key]
+        local a={key=s.key,name=s.name,tier=s.chosenTier,count=0,existingCount=q.count}
+        names[string.lower(s.name)]={source=s,allocation=a};table.insert(result.allocation,a)
+    end
+    for i=1,40 do
+        local e=entries[i];local item=e and e.kind=="normal" and names[string.lower(e.account or "")]
+        if item then
+            local a=item.allocation;a.count=a.count+1
+            local price=C.PlannerPricePick(request.quotes[item.source.key],e)
+            if price~=nil then a.nextMin=a.nextMin and math.min(a.nextMin,price) or price;a.nextMax=a.nextMax and math.max(a.nextMax,price) or price end
+        end
+    end
+    for _,a in ipairs(result.allocation) do
+        a.fourth=a.count>0 and a.existingCount+a.count==4
+        a.nextPrice=a.nextMin==a.nextMax and a.nextMin or nil
+    end
+    C.PlannerEstimate(result,sources,request)
+    return result,names
+end
+
+-- Reassign the whole normal composition for one exact source-count transfer.
+-- Reuse the eligibility/priority flow, including its residual-path repair. The
+-- class/role slots and all non-normal rows stay fixed, so grouping survives.
+function C.PlannerUltraReassign(entries,sources,request,names,high,low,jobs)
+    local limited={};local affected={}
+    for _,source in ipairs(sources) do
+        if source.chosenTier==high.chosenTier or source.chosenTier==low.chosenTier then
+            local s=C.PlannerCopy(source);table.insert(limited,s);affected[string.lower(s.name)]=true
+            s.capacity=names[string.lower(s.name)].allocation.count
+            if s.key==high.key then s.capacity=s.capacity-1 end
+            if s.key==low.key then s.capacity=s.capacity+1 end
+        end
+    end
+    local rows=C.PlannerAllocate(jobs,limited,request)
+    if not rows then return nil end
+    local trial=C.PlannerCopy(entries);local used,pending={},{}
+    -- Retain byte-equivalent generated rows in their original slots first,
+    -- including different captured races for repeated source/class/role rows.
+    for slot=1,40 do
+        local e=entries[slot]
+        if e and e.kind=="normal" and affected[string.lower(e.account or "")] then
+            local matched=false
+            for i,row in ipairs(rows) do
+                if not used[i] and C.PlannerEqual(e,row) then used[i]=true;matched=true;break end
+            end
+            if not matched then table.insert(pending,slot) end
+        end
+    end
+    for _,slot in ipairs(pending) do
+        local old=entries[slot];local matched=false
+        for i,row in ipairs(rows) do
+            if not used[i] and row.class==old.class and row.role==old.role then
+                trial[slot]=row;used[i]=true;matched=true;break
+            end
+        end
+        if not matched then return nil end
+    end
+    return trial
+end
+
+function C.PlannerUltraApply(entries,sources,request)
+    local bestRank=0
+    for _,s in ipairs(sources) do
+        local q=request.quotes and request.quotes[s.key]
+        if type(q)~="table" or q.accountId~=s.accountId or string.lower(q.name or "")~=string.lower(s.name)
+            or q.tier~=s.chosenTier or q.max~=4 or not C.RaidNumber(q.count,0,3)
+            or type(q.received)~="number" or type(request.quoteNow)~="number"
+            or request.quoteNow<q.received or request.quoteNow-q.received>30 then
+            return nil,"Ultra gold saving needs fresh discounted prices and the current four-hire count for every selected character. Build again; no licence was changed."
+        end
+        bestRank=math.max(bestRank,C.PlannerTierRank(s.chosenTier) or 0)
+    end
+    local current,names=C.PlannerUltraMetrics(entries,sources,request)
+    if not current.estimate.complete then return nil,"Ultra gold saving cannot compare every selected race and remaining hire order safely. Build again to check prices." end
+    local stats={replacements=0,savedCopper=0,reassignedRows=0,candidates=0,priorityBlocked=0,notCheaper=0};local before=current.estimate.totalCopper
+    local priority,jobs,counts={}, {},{}
+    local custom=C.PlannerLoadPriority(request)=="custom"
+    for i,id in ipairs(C.PlannerPriorityOrder(request)) do
+        local _,_,class,role=string.find(id,"^(%a+):(%a+)$")
+        local rank=i
+        if not custom then
+            local bucket=C.PlannerBucket({class=class,role=role})
+            for j,value in ipairs(C.PLANNER_PRIORITY) do if value==bucket then rank=j end end
+        end
+        priority[id]=rank
+    end
+    for _,e in ipairs(entries) do
+        if e.kind=="normal" and C.PlannerTierRank(e.tier)>=bestRank-1 then local id=e.class..":"..e.role;counts[id]=(counts[id] or 0)+1 end
+    end
+    for _,class in ipairs(C.PLANNER_CLASSES) do
+        for _,role in ipairs(C.PLANNER_ROLES) do
+            local count=counts[class..":"..role]
+            if count then table.insert(jobs,{class=class,role=role,count=count}) end
+        end
+    end
+    local allocationRequest=C.PlannerCopy(request);allocationRequest.saveGold=false
+    -- Each accepted transfer removes one highest-licence fourth without creating
+    -- another at that licence. Normal slots bound the number of accepted steps.
+    for step=1,40 do
+        local best,weakestPriority,highCounts,frontier=nil,0,{},nil
+        for _,row in ipairs(entries) do
+            if row.kind=="normal" and C.PlannerTierRank(row.tier)==bestRank then
+                local rank=priority[row.class..":"..row.role]
+                weakestPriority=math.max(weakestPriority,rank);highCounts[rank]=(highCounts[rank] or 0)+1
+            end
+        end
+        local function consider(trial)
+            if not trial then return end
+            stats.candidates=stats.candidates+1
+            local after={}
+            for _,row in ipairs(trial) do
+                if row.kind=="normal" and C.PlannerTierRank(row.tier)==bestRank then
+                    local rank=priority[row.class..":"..row.role];after[rank]=(after[rank] or 0)+1
+                end
+            end
+            if custom then
+                -- Explicit class/role priority stays hard, including R4's case
+                -- where only an earlier Tank move would save money.
+                for rank,count in pairs(highCounts) do
+                    if rank<weakestPriority and (after[rank] or 0)<count then stats.priorityBlocked=stats.priorityBlocked+1;return end
+                end
+            else
+                -- Auto uses its six advertised groups. Find the strongest
+                -- feasible distribution BEFORE comparing prices. A mandatory
+                -- faction-locked healer can stay high without blocking others.
+                local quality={};for rank=1,table.getn(C.PLANNER_PRIORITY) do quality[rank]=-(after[rank] or 0) end
+                if not frontier or C.PlannerCostLess(quality,frontier) then frontier=quality;best=nil
+                elseif C.PlannerCostLess(frontier,quality) then stats.priorityBlocked=stats.priorityBlocked+1;return end
+            end
+            local candidate=C.PlannerUltraMetrics(trial,sources,request)
+            if candidate.estimate.complete and candidate.estimate.totalCopper<current.estimate.totalCopper then
+                if not best or candidate.estimate.totalCopper<best.result.estimate.totalCopper then best={entries=trial,result=candidate} end
+            else stats.notCheaper=stats.notCheaper+1 end
+        end
+        for _,high in ipairs(sources) do
+            local highItem=names[string.lower(high.name)]
+            if C.PlannerTierRank(high.chosenTier)==bestRank and highItem.allocation.fourth then
+                for _,low in ipairs(sources) do
+                    local item=names[string.lower(low.name)];local count=item.allocation.count
+                    if low.key~=high.key and string.lower(low.name)~=string.lower(high.name) and low.eligible and not low.conflict
+                        and C.PlannerTierRank(low.chosenTier)==bestRank-1
+                        and count<math.min(low.capacity or 4,4-item.allocation.existingCount) then
+                        -- Retain the cheap direct trials, including their actual
+                        -- slot/race ordinals, then try a full residual reassignment.
+                        for slot=40,1,-1 do
+                            local e=entries[slot]
+                            if e and e.kind=="normal" and string.lower(e.account or "")==string.lower(high.name)
+                                and (not custom or priority[e.class..":"..e.role]==weakestPriority) then
+                                local index=1
+                                for _,old in ipairs(entries) do if old.kind=="normal" and old.account==low.name and old.class==e.class and old.role==e.role then index=index+1 end end
+                                local row=C.PlannerNormal(low,e.class,e.role,request,index)
+                                if row then local trial=C.PlannerCopy(entries);trial[slot]=row;consider(trial) end
+                            end
+                        end
+                        consider(C.PlannerUltraReassign(entries,sources,allocationRequest,names,high,low,jobs))
+                    end
+                end
+            end
+        end
+        if not best then break end
+        for slot=1,40 do
+            if not C.PlannerEqual(entries[slot],best.entries[slot]) then stats.reassignedRows=stats.reassignedRows+1 end
+            entries[slot]=best.entries[slot]
+        end
+        current,names=C.PlannerUltraMetrics(entries,sources,request);stats.replacements=stats.replacements+1
+    end
+    stats.savedCopper=before-current.estimate.totalCopper
+    return current.allocation,stats
+end
+
+function C.PlannerMelee(e)
+    return C.IsFilledEntry(e) and (e.role=="tank" or e.role=="mdps")
+end
+
+function C.PlannerPhysical(e)
+    return C.PlannerMelee(e) or (C.IsFilledEntry(e) and e.class=="hunter" and e.role=="rdps")
+end
+
+function C.PlannerCasterPreference(e)
+    if not C.IsFilledEntry(e) or e.role~="rdps" or (e.class~="mage" and e.class~="warlock") then return 0 end
+    if e.kind=="legacy" then return 1200 end
+    if e.class=="mage" and e.spec=="fire" then return 240 end
+    if e.class=="warlock" then return 50 end
+    return 0 -- Unknown/default/frost Mage is never inferred to be Fire.
+end
+
+function C.PlannerPair(a,b)
+    if not C.IsFilledEntry(a) or not C.IsFilledEntry(b) then return 0 end
+    local score=0
+    if (a.class=="shaman" and C.PlannerPhysical(b)) or (b.class=="shaman" and C.PlannerPhysical(a)) then score=score+30 end
+    if a.class=="shaman" and b.class=="shaman" then score=score-70 end
+    if (a.class=="warrior" and C.PlannerMelee(a) and b.role=="mdps") or (b.class=="warrior" and C.PlannerMelee(b) and a.role=="mdps") then score=score+22 end
+    if a.role=="mdps" and b.role=="mdps" then score=score+6 end
+    if a.class=="druid" and a.role=="rdps" then score=score+C.PlannerCasterPreference(b) end
+    if b.class=="druid" and b.role=="rdps" then score=score+C.PlannerCasterPreference(a) end
+    local ar=a.role=="rdps" and not C.PlannerPhysical(a)
+    local br=b.role=="rdps" and not C.PlannerPhysical(b)
+    local ah=a.role=="healer" and (a.class=="priest" or a.class=="paladin")
+    local bh=b.role=="healer" and (b.class=="priest" or b.class=="paladin")
+    if (ah and br) or (bh and ar) then score=score+20 end
+    if ah and bh then score=score+(a.class==b.class and -90 or 8) end
+    if (a.role=="tank" and b.role=="healer") or (b.role=="tank" and a.role=="healer") then score=score+6 end
+    if a.role=="tank" and b.role=="tank" then score=score+((a.class=="warrior" and b.class=="warrior") and 80 or -8) end
+    return score
+end
+
+function C.PlannerGroupScore(entries,group)
+    local score,paladins,constrained=0,0,false
+    for a=(group-1)*5+1,group*5 do
+        local e=entries[a]
+        if C.IsFilledEntry(e) then
+            if C.PlannerMelee(e) and group<=4 then score=score+10000 end
+            if not C.PlannerMelee(e) then score=score+group end
+            if e.class=="paladin" and e.role=="healer" then paladins=paladins+1 end
+            if C.PlannerPhysical(e) or e.role=="rdps" then constrained=true end
+        end
+        for b=a+1,group*5 do score=score+C.PlannerPair(e,entries[b]) end
+    end
+    -- Last fallback only: one healer Paladin in an otherwise unconstrained group.
+    -- Specific physical/caster and Priest/Paladin ranged preferences score first.
+    if not constrained and paladins>0 then score=score+3 end
+    return score
+end
+
+-- Reserve support and occupied capacity before physical groups, caster bundles
+-- and healer cover. No later score-based swap may undo an earlier constraint.
+function C.PlannerReserveGroups(entries,pinned,groups)
+    local out,locked,pool,empty,notes={}, {}, {}, {}, {}
+    local limit,total=groups*5,0
+    local function key(e)
+        local parts={}
+        for _,field in ipairs({"kind","class","role","sourceName","charName","account","tier","spec","race","gender","whisperName"}) do table.insert(parts,tostring(e[field] or "")) end
+        return table.concat(parts,";")
+    end
+    for i=1,limit do
+        local e=entries[i] or {kind="empty"}
+        if C.IsFilledEntry(e) then total=total+1 end
+        if pinned[i] then out[i]=e; locked[i]=true
+        elseif C.IsFilledEntry(e) then table.insert(pool,{entry=e,index=i,key=key(e)})
+        else table.insert(empty,e) end
+    end
+    table.sort(pool,function(a,b) if a.key~=b.key then return a.key<b.key end; return a.index<b.index end)
+    local function count(g,match)
+        local n=0; for i=(g-1)*5+1,g*5 do if C.IsFilledEntry(out[i]) and match(out[i]) then n=n+1 end end; return n
+    end
+    local function available(match)
+        local n=0; for _,item in ipairs(pool) do if match(item.entry) then n=n+1 end end; return n
+    end
+    local function take(match)
+        for i,item in ipairs(pool) do if match(item.entry) then table.remove(pool,i); return item.entry end end
+    end
+    local allowed=nil
+    local function free(g)
+        local n=0; for i=(g-1)*5+1,g*5 do if not out[i] and (not allowed or allowed[i]) then n=n+1 end end; return n
+    end
+    local function put(e,g,right)
+        if not e then return nil end
+        local first,last,step=(g-1)*5+1,g*5,1
+        if right then first,last,step=last,first,-1 end
+        for i=first,last,step do if not out[i] and (not allowed or allowed[i]) then out[i]=e; locked[i]=true; return i end end
+        error("Staged grouping lost capacity")
+    end
+    local function shaman(e) return e.class=="shaman" end
+    local shamans=available(shaman)
+    for i,e in pairs(out) do
+        if C.IsFilledEntry(e) and shaman(e) then
+            shamans=shamans+1
+            if math.mod(i,5)~=0 then table.insert(notes,"Fixed Shaman at slot "..i.." cannot move to the rightmost slot of group "..(math.floor((i-1)/5)+1)..".") end
+        end
+    end
+    local function reserveShaman(g,required,normalFirst)
+        if count(g,shaman)>0 then return end
+        if free(g)==0 then
+            if required then table.insert(notes,"Group "..g.." is full of fixed rows; its Shaman reservation is impossible.") end
+            return
+        end
+        local e=normalFirst and take(function(v) return shaman(v) and v.kind=="normal" end) or nil
+        e=e or take(shaman)
+        if not e then
+            if required then table.insert(notes,"Group "..g.." cannot receive a Shaman: remaining identities occupy fixed anchors elsewhere.") end
+            return
+        end
+        local slot=put(e,g,true)
+        if slot~=g*5 then table.insert(notes,"Fixed row at slot "..(g*5).." blocks the rightmost Shaman position in group "..g.."; used slot "..slot.." instead.") end
+    end
+    -- Reserve Group2's normal Shaman before Group1 can consume the sole one.
+    if shamans>=2 and groups>=2 then reserveShaman(2,true,true) end
+    for g=1,math.min(5,groups,shamans) do reserveShaman(g,true,false) end
+    for g=1,groups do reserveShaman(g,false,g==2) end
+    while available(shaman)>0 do
+        local best,bestCount=nil,nil
+        for g=1,groups do local n=count(g,shaman); if free(g)>0 and (not bestCount or n<bestCount) then best=g; bestCount=n end end
+        assert(best,"Shaman reservation lost capacity"); put(take(shaman),best,true)
+    end
+    -- Fixed caster groups may extend the prefix; movable bundles may not.
+    local function rebuildMask()
+        allowed={};local reserved=0
+        for i=1,limit do if C.IsFilledEntry(out[i]) then allowed[i]=true;reserved=reserved+1 end end
+        for i=1,limit do if reserved<total and not out[i] then allowed[i]=true;reserved=reserved+1 end end
+        assert(reserved==total,"Occupied prefix lost capacity")
+    end
+    rebuildMask()
+    local function firstGroup(avoidTwo)
+        for g=1,groups do if free(g)>0 and not (avoidTwo and g==2) then return g end end
+        for g=1,groups do if free(g)>0 then return g end end
+    end
+    local function warriorTank(e) return e.class=="warrior" and e.role=="tank" end
+    while free(1)>0 and available(warriorTank)>0 do put(take(warriorTank),1,false) end
+    local function hunter(e) return e.class=="hunter" and e.role=="rdps" end
+    local hunterGroup=groups>=2 and (available(hunter)>0 or count(2,hunter)>0)
+    if hunterGroup then
+        local function member(match,label)
+            if count(2,match)>0 then return end
+            if free(2)>0 and available(match)>0 then put(take(match),2,false)
+            else table.insert(notes,"Group 2 Hunter preference lacks "..label.." or free capacity; no substitute hire was added.") end
+        end
+        member(hunter,"a Hunter")
+        member(function(e) return e.class=="rogue" and e.role=="mdps" end,"a Rogue")
+        local function feral(e) return e.class=="druid" and e.role=="mdps" end
+        local function bear(e) return e.class=="druid" and e.role=="tank" end
+        if count(2,feral)+count(2,bear)==0 then
+            if available(feral)>0 then member(feral,"a feral Druid") else member(bear,"a feral/bear Druid") end
+        end
+        member(function(e) return e.kind=="normal" and e.class=="warrior" and e.role=="mdps" end,"a normal Warrior MDPS for Battle Shout")
+    end
+    local function balance(e) return e.class=="druid" and e.role=="rdps" end
+    local function shadow(e) return e.class=="priest" and e.role=="rdps" end
+    local function warlock(e) return e.class=="warlock" and e.role=="rdps" end
+    local function fire(e) return e.class=="mage" and e.role=="rdps" and e.spec=="fire" end
+    local function primaryRank(e)
+        if not C.IsFilledEntry(e) or e.role~="rdps" then return 0 end
+        if e.kind=="legacy" and e.class=="mage" then return 4 end
+        if e.kind=="legacy" and warlock(e) then return 3 end
+        if fire(e) then return 2 end
+        if warlock(e) then return 1 end
+        return 0
+    end
+    local function bundle(g,movable)
+        local room=free(g)-(movable and 1 or 0)
+        if room<0 then return nil end
+        local primary,rank,fromPool=nil,0,false
+        for i=(g-1)*5+1,g*5 do local r=primaryRank(out[i]);if r>rank then primary=out[i];rank=r end end
+        if room>0 then
+            for _,item in ipairs(pool) do local r=primaryRank(item.entry);if r>rank then primary=item.entry;rank=r;fromPool=true end end
+        end
+        local plan={rows={},rank=rank,extra=0,fire=0,primary=primary}
+        if fromPool then table.insert(plan.rows,primary);room=room-1 end
+        for i=(g-1)*5+1,g*5 do
+            local e=out[i]
+            if e and e~=primary and (fire(e) or warlock(e)) then plan.extra=plan.extra+1;if fire(e) then plan.fire=plan.fire+1 end end
+        end
+        for _,match in ipairs({fire,warlock}) do
+            for _,item in ipairs(pool) do
+                local e=item.entry
+                if plan.extra<2 and room>0 and e~=primary and match(e) then
+                    table.insert(plan.rows,e);plan.extra=plan.extra+1;room=room-1
+                    if fire(e) then plan.fire=plan.fire+1 end
+                end
+            end
+        end
+        return plan
+    end
+    local function placeBalance(e,fixedGroup)
+        -- Predict residual physical space without consuming those identities.
+        local projected,left={},available(C.PlannerPhysical)
+        for g=1,groups do projected[g]=math.min(free(g),left);left=left-projected[g] end
+        local best,chosen,score=nil,nil,nil
+        for g=1,groups do
+            if not fixedGroup or fixedGroup==g then
+                local plan=bundle(g,e~=nil)
+                if plan then
+                    local physical=count(g,function(v)return v.class~="shaman" and C.PlannerPhysical(v) end)
+                    local s=plan.rank*100000000+math.min(2,plan.extra)*1000000+math.min(2,plan.fire)*100000
+                        -physical*1000000-projected[g]*1000-(e and count(g,balance)*1000000000 or 0)
+                        +(projected[g]>0 and g or -g)
+                    if not score or s>score then best=g;chosen=plan;score=s end
+                end
+            end
+        end
+        if not best then table.insert(notes,"A fixed Balance Druid has no free caster capacity in its five-person group.");return end
+        if e then put(e,best,false) end
+        for _,row in ipairs(chosen.rows) do assert(take(function(v)return v==row end),"Caster identity already consumed");put(row,best,false) end
+        if chosen.rank==0 or chosen.extra<2 then
+            local name=e and (e.sourceName or e.charName or e.account) or "fixed Balance"
+            table.insert(notes,"Balance caster group "..best.." ("..tostring(name)..") has "..(chosen.rank>0 and "a primary caster" or "no eligible primary caster").." and "..math.min(2,chosen.extra).." of two additional Fire Mage/Warlock positions. Supplied identities, stronger reservations and five-person capacity limit this block; no extra hire was added.")
+        end
+    end
+    allowed=nil
+    for g=1,groups do if count(g,balance)>0 then placeBalance(nil,g) end end
+    rebuildMask()
+    while available(balance)>0 do placeBalance(take(balance)) end
+    -- Non-Warrior tanks gain no co-location bonus. Remaining physical rows use
+    -- the earliest slots, including sensible spare positions in Group1.
+    for _,match in ipairs({warriorTank,function(e) return e.role=="tank" end,C.PlannerPhysical}) do
+        while available(match)>0 do
+            local e=take(match)
+            local avoid=hunterGroup and e.kind=="legacy" and e.class=="warrior" and e.role=="mdps"
+            put(e,assert(firstGroup(avoid)),false)
+        end
+    end
+    local lastPhysical=nil
+    for g=1,groups do
+        if count(g,function(e) return e.class~="shaman" and (e.role=="mdps" or hunter(e)) end)>0 then lastPhysical=g end
+    end
+    local function healer(class) return function(e) return e.class==class and e.role=="healer" end end
+    if lastPhysical then
+        for _,class in ipairs({"paladin","priest"}) do if free(lastPhysical)>0 and available(healer(class))>0 then put(take(healer(class)),lastPhysical,false) end end
+    end
+    -- Shadow receives only Warlocks left after complete Balance reservations.
+    local function placeShadow(e,fixedGroup)
+        local best,score=nil,nil
+        for g=1,groups do if (not fixedGroup or fixedGroup==g) and free(g)>=(e and 1 or 0) then
+            local room=free(g)-(e and 1 or 0)
+            local n=count(g,warlock)+math.min(room,available(warlock))
+            local physical=count(g,function(v) return v.class~="shaman" and C.PlannerPhysical(v) end)
+            local s=n*1000000-physical*10000-count(g,shadow)*1000+free(g)*10-g
+            if not score or s>score then best=g; score=s end
+        end end
+        if not best then return end
+        if e then put(e,best,false) end
+        while free(best)>0 and available(warlock)>0 do put(take(warlock),best,false) end
+        if count(best,warlock)<4 then table.insert(notes,"Shadow Priest group "..best.." has "..count(best,warlock).." Warlock(s); available locks, earlier Balance partners and five-person capacity limit this deterministic allocation.") end
+    end
+    for g=1,groups do if count(g,shadow)>0 then placeShadow(nil,g) end end
+    while available(shadow)>0 do placeShadow(take(shadow)) end
+    local function ranged(e) return e.role=="rdps" and not C.PlannerPhysical(e) end
+    for g=1,groups do if count(g,ranged)>0 then
+        for _,class in ipairs({"priest","paladin"}) do if free(g)>0 and count(g,healer(class))==0 and available(healer(class))>0 then put(take(healer(class)),g,false) end end
+    end end
+    while available(ranged)>0 do
+        local e=take(ranged); local best,score=nil,nil
+        for g=1,groups do if free(g)>0 then
+            local physical=count(g,function(v) return v.class~="shaman" and C.PlannerPhysical(v) end)
+            local s=-physical*100000+count(g,balance)*C.PlannerCasterPreference(e)+count(g,healer("priest"))*20+count(g,healer("paladin"))*20-g
+            if not score or s>score then best=g; score=s end
+        end end
+        put(e,assert(best),false)
+        if count(best,ranged)==1 then
+            for _,class in ipairs({"priest","paladin"}) do if free(best)>0 and count(best,healer(class))==0 and available(healer(class))>0 then put(take(healer(class)),best,false) end end
+        end
+    end
+    for g=1,groups do
+        if free(g)>0 and count(g,C.PlannerPhysical)==0 and count(g,healer("paladin"))==0 and available(healer("paladin"))>0 then put(take(healer("paladin")),g,false) end
+    end
+    while table.getn(pool)>0 do put(table.remove(pool,1).entry,assert(firstGroup()),false) end
+    local at,lastMovable=1,0
+    for i=1,limit do if C.IsFilledEntry(out[i]) and out[i].kind~="player" then lastMovable=i end end
+    local gaps=0; for i=1,lastMovable do if not out[i] then gaps=gaps+1 end end
+    if gaps>0 then table.insert(notes,gaps.." earlier empty slot(s) remain because fixed anchors or rightmost Shaman reservations require later occupied slots; compaction cannot fill them without breaking those constraints.") end
+    for i=1,limit do
+        if not out[i] then out[i]=assert(empty[at],"Grouping lost an empty slot"); at=at+1 end
+        entries[i]=out[i]
+    end
+    assert(at-1==table.getn(empty),"Grouping duplicated an empty slot")
+    return locked,notes
+end
+
+function C.PlannerGroup(entries,pinned,groups)
+    local locked,notes=C.PlannerReserveGroups(entries,pinned,groups)
+    local score=0; for g=1,groups do score=score+C.PlannerGroupScore(entries,g) end
+    return {moves=0,score=score,notes=notes,staged=true}
+end
+
+-- Only explicit player rows identify humans. Captured guests may be unresolved
+-- companions, so they keep their distinct type and are never guessed to be humans.
+function C.PlannerPlaceHumans(entries,pinned,player,notes)
+    local humans,seen={},{}
+    for i=1,40 do
+        local e=entries[i]
+        if type(e)=="table" and e.kind=="player" then
+            if not C.IsSafeCharacterName(e.charName) or not C.RoleAllowedForClass(e.class,e.role) then return nil,"A human row needs its full identity and verified class/role before planning." end
+            local identity=string.lower(e.charName)
+            if seen[identity] then return nil,"Duplicate human identity: "..e.charName..". Edit the plan before planning." end
+            seen[identity]=true
+            if identity~=string.lower(player.name) then table.insert(humans,{entry=e,index=i}) end
+        end
+    end
+    table.sort(humans,function(a,b) return string.lower(a.entry.charName)<string.lower(b.entry.charName) end)
+    for _,h in ipairs(humans) do entries[h.index]=nil; pinned[h.index]=nil end
+    local displaced={}
+    for n,h in ipairs(humans) do
+        local dest=40-n
+        if C.IsFilledEntry(entries[dest]) then table.insert(displaced,{entry=entries[dest],fixed=pinned[dest]}) end
+        entries[dest]=h.entry; pinned[dest]=true
+    end
+    for _,v in ipairs(displaced) do
+        local dest=C.FirstEmptySlot(entries,39-table.getn(humans))
+        if not dest then return nil,"Human tail has no safe space for its displaced companion/anchor; the limit is 40." end
+        entries[dest]=v.entry; pinned[dest]=v.fixed
+        table.insert(notes,"Reserved human tail; moved its previous non-human occupant to slot "..dest.." in this proposal.")
+    end
+    return 40,notes
+end
+
+function C.PlannerPlacePlayer(entries,pinned,player)
+    if type(player)~="table" or not C.IsSafeCharacterName(player.name) then return nil,"Current player identity is unavailable." end
+    local role=C.NormalizeRoleForClass(player.class,player.role)
+    if not C.RoleAllowedForClass(player.class,role) then return nil,"Current player class/role is unavailable." end
+    local previous,oldSlot=nil,nil
+    for i=1,40 do
+        local e=entries[i]
+        if C.IsFilledEntry(e) and (e.kind=="player" or e.kind=="guest") and string.lower(e.charName or e.companionName or "")==string.lower(player.name) then
+            if not previous then previous=C.PlannerCopy(e); oldSlot=i end
+            entries[i]=nil; pinned[i]=nil
+        end
+    end
+    local notes={}
+    if C.IsFilledEntry(entries[40]) then
+        local dest=oldSlot and oldSlot<40 and oldSlot or C.FirstEmptySlot(entries,39)
+        if not dest then return nil,"Slot 40 holds a fixed row and no slot is free for the current player; the limit is 40." end
+        local e=entries[40]; entries[dest]=e; pinned[dest]=true
+        table.insert(notes,"Reserved slot 40 for the current player; moved its fixed occupant to slot "..dest.." in this proposal. Review before saving.")
+    end
+    previous=previous or {}
+    previous.kind="player"; previous.charName=player.name; previous.class=player.class
+    previous.role=C.NormalizeRoleForClass(player.class,player.role or previous.role)
+    entries[40]=previous; pinned[40]=true
+    return C.PlannerPlaceHumans(entries,pinned,player,notes)
+end
+
+-- Count desired normals plus actual fixed/included identities without allocating
+-- sources or guessing unknown legacy metadata. Used by the composition footer.
+function C.PlannerCompositionTotals(base,sources,request)
+    local out={total=0,normal=0,legacy=0,player=0,guest=0,unresolved=0,roles={tank=0,mdps=0,rdps=0,healer=0,dps=0}}
+    local entries,seen={},{}
+    for i,e in pairs(base.entries or {}) do
+        if C.IsFilledEntry(e) and e.kind~="normal" then entries[i]=C.PlannerCopy(e) end
+    end
+    if request.player then local slot=C.PlannerPlacePlayer(entries,{},request.player); if not slot then out.unresolved=out.unresolved+1 end end
+    for _,e in pairs(entries) do
+        if C.IsFilledEntry(e) then
+            out[e.kind]=(out[e.kind] or 0)+1; out.total=out.total+1
+            if (e.kind=="normal" or e.kind=="legacy") and out.roles[e.role] then out.roles[e.role]=out.roles[e.role]+1 end
+            if e.kind=="legacy" then seen[string.lower(C.GetLegacyHireName(e))]=true end
+        end
+    end
+    for _,s in ipairs(sources or {}) do
+        local sel=request.sources[s.key]
+        if sel and sel.includeLegacy and not seen[string.lower(s.name)] then
+            seen[string.lower(s.name)]=true; out.legacy=out.legacy+1; out.total=out.total+1
+            local role=sel.legacyRole or s.legacyRole
+            if not s.conflict and s.legacyClass and C.RoleAllowedForClass(s.legacyClass,role) and out.roles[role] then out.roles[role]=out.roles[role]+1 else out.unresolved=out.unresolved+1 end
+        end
+    end
+    for _,class in ipairs(C.PLANNER_CLASSES) do
+        for _,role in ipairs(C.PLANNER_ROLES) do
+            local n=request.counts[class..":"..role] or 0
+            if C.RoleAllowedForClass(class,role) and type(n)=="number" and n>=0 and n<=40 and n==math.floor(n) then
+                out.normal=out.normal+n; out.total=out.total+n; out.roles[role]=out.roles[role]+n
+            end
+        end
+    end
+    return out
+end
+
+-- Draft companions come only from entered normals and selected legacies. Carried
+-- saved rows still occupy slots, but do not silently become draft role totals.
+function C.PlannerDraftTotals(base,sources,request)
+    local draft=C.PlannerCompositionTotals({entries={}},sources,request)
+    local occupied=C.PlannerCompositionTotals(base,sources,request)
+    draft.saved={normal=0,legacy=0,humans=0}
+    for _,e in pairs(base.entries or {}) do
+        if C.IsFilledEntry(e) then
+            if e.kind=="normal" or e.kind=="legacy" then draft.saved[e.kind]=draft.saved[e.kind]+1
+            elseif e.kind=="player" or e.kind=="guest" then draft.saved.humans=draft.saved.humans+1 end
+        end
+    end
+    draft.humans=occupied.player+occupied.guest
+    draft.carriedLegacy=math.max(0,occupied.legacy-draft.legacy)
+    draft.occupied=occupied.total
+    draft.unresolved=draft.unresolved+occupied.unresolved
+    return draft
+end
+
+function C.PlannerBuild(base,sources,request)
+    if type(base)~="table" or type(base.entries)~="table" or type(request)~="table" or type(request.counts)~="table" or type(request.sources)~="table" then return nil,"Planner input is missing." end
+    local result={plan=C.PlannerCopy(base),notes={},normal=0,legacy=0,player=0,guest=0,total=0,fourths=0,replaced=0}
+    local entries,pinned,legacyNames,targets={}, {}, {}, {}
+    local maxAnchor=0
+    for key,e in pairs(base.entries) do
+        if not C.RaidNumber(key,1,40) then return nil,"The existing profile exceeds the 40-slot board." end
+        if C.IsFilledEntry(e) then
+            if e.kind=="normal" then result.replaced=result.replaced+1
+            elseif e.kind=="player" or e.kind=="guest" or e.kind=="legacy" then
+                if not C.PlanEntry(e) then return nil,"An existing fixed row needs valid identity fields before planning." end
+                entries[key]=C.PlannerCopy(e); pinned[key]=true; maxAnchor=math.max(maxAnchor,key)
+                result[e.kind]=result[e.kind]+1; result.total=result.total+1
+                if e.kind=="legacy" then
+                    local name=string.lower(C.GetLegacyHireName(e)); local target=string.lower(C.GetLegacyWhisperName(e))
+                    if not C.IsSafeCharacterName(name) or not C.BuildHireCommand(e) then return nil,"An existing legacy has only a shortened or unknown source identity; choose its actual full character first." end
+                    if legacyNames[name] then return nil,"Existing legacy rows duplicate the same full source identity; edit them first." end
+                    legacyNames[name]=e; targets[target]=name
+                end
+            else return nil,"Unsupported existing row; nothing can be replaced safely." end
+        end
+    end
+    if request.player then
+        local slot,notes=C.PlannerPlacePlayer(entries,pinned,request.player)
+        if not slot then return nil,notes end
+        result.plan.plannerPlayerSlot=40
+        result.player=0; result.guest=0; result.legacy=0; result.total=0; maxAnchor=0
+        for i,e in pairs(entries) do
+            if C.IsFilledEntry(e) then result[e.kind]=result[e.kind]+1; result.total=result.total+1; maxAnchor=math.max(maxAnchor,i) end
+        end
+        for _,note in ipairs(notes) do table.insert(result.notes,note) end
+    end
+    local available={}; for _,s in ipairs(sources or {}) do available[s.key]=s end
+    local chosen,newLegacy={},{}
+    local keys={}; for key in pairs(request.sources) do table.insert(keys,key) end; table.sort(keys)
+    for _,key in ipairs(keys) do
+        local selection=request.sources[key]; local s=available[key]
+        if selection.selected or selection.includeLegacy then
+            if not s then return nil,"A selected source is no longer listed. Reopen the planner and refresh account data." end
+            if s.conflict then return nil,s.name..": account identity is ambiguous." end
+        end
+        if selection.selected then
+            if not s.eligible or not C.KnownFaction(s.faction) then return nil,s.name..": "..(s.reason or "eligibility is unknown").."." end
+            if not C.PlannerHas(s.tiers,selection.tier) then return nil,s.name..": choose an available licence tier; no tier was upgraded." end
+            local copy=C.PlannerCopy(s); copy.chosenTier=selection.tier; table.insert(chosen,copy)
+        end
+        if selection.includeLegacy then
+            local class,role=s.legacyClass,selection.legacyRole or s.legacyRole
+            if not class or not role or not C.RoleAllowedForClass(class,role) then return nil,s.name..": legacy class/role is missing or invalid. Choose a known legacy role or remember its class first." end
+            local name=string.lower(s.name); local target=string.lower(C.NormalizeLegacyName(s.name))
+            local anchor=legacyNames[name]
+            if anchor then
+                if anchor.class~=class or anchor.role~=role then return nil,s.name..": fixed legacy anchor has a different class/role. Edit that anchor first." end
+            else
+                if not C.IsSafeCharacterName(s.name) then return nil,"A selected legacy has no verified full source identity." end
+                if targets[target] then table.insert(result.notes,"Distinct full sources "..s.name.." and "..targets[target].." share live alias "..C.NormalizeLegacyName(s.name)..". Planning keeps both identities; Execute must stop until their live targets can be distinguished safely.") end
+                targets[target]=name
+                local e={kind="legacy",sourceName=s.name,charName=s.name,class=class,role=role,spec="default",whisperName=C.NormalizeLegacyName(s.name),denyList={}}
+                if not C.BuildHireCommand(e) then return nil,s.name..": legacy identity cannot be resolved safely." end
+                table.insert(newLegacy,e); legacyNames[name]=e; result.legacy=result.legacy+1; result.total=result.total+1
+            end
+        end
+    end
+    table.sort(chosen,function(a,b) return a.key<b.key end)
+    if table.getn(chosen)>256 then return nil,"Too many selected sources; select at most 256." end
+    local jobs,valid={},{}
+    for _,class in ipairs(C.PLANNER_CLASSES) do
+        for _,role in ipairs(C.PLANNER_ROLES) do
+            local key=class..":"..role
+            if C.RoleAllowedForClass(class,role) then
+                valid[key]=true; local count=request.counts[key] or 0
+                if type(count)~="number" or count~=math.floor(count) or not (count>=0 and count<=40) then return nil,"Counts must be whole numbers from 0 to 40." end
+                if count>0 then table.insert(jobs,{class=class,role=role,count=count}); result.normal=result.normal+count end
+            end
+        end
+    end
+    for key in pairs(request.counts) do if not valid[key] then return nil,"Unsupported class/role count: "..tostring(key) end end
+    result.total=result.total+result.normal
+    if result.total>40 then return nil,"The plan needs "..result.total.." slots including fixed players/guests/legacies; the limit is 40." end
+    if result.normal>0 and table.getn(chosen)==0 then return nil,"Select eligible hire-from characters and a licence tier for each." end
+    local allocationRequest=request
+    if request.ultraGold==true then allocationRequest=C.PlannerCopy(request);allocationRequest.saveGold=false end
+    local normal,allocation=C.PlannerAllocate(jobs,chosen,allocationRequest)
+    if not normal then return nil,allocation end
+    result.allocation=allocation
+    for _,a in ipairs(allocation) do
+        if a.fourth then result.fourths=result.fourths+1 end
+        local s=available[a.key]
+        if a.count>0 and not s.localSource and not s.live then table.insert(result.notes,a.name..": remembered linked data only; refresh its live link before Execute.") end
+    end
+    if request.ultraGold~=true then
+        if result.fourths>0 then table.insert(result.notes,result.fourths..(request.saveGold~=false and " source(s) need a fourth normal hire to satisfy the exact counts." or " source(s) use a fourth normal hire under the highest-licence preference.").." No exact gold-price claim is made.") end
+        table.insert(result.notes,request.saveGold~=false and "Save gold is on: avoid fourth hires when other selected, eligible licence capacity can satisfy the exact counts; then favor stronger chosen licences and class/role priority." or "Save gold is off: maximize the strongest selected licences, then each next licence, including fourth hires; class/role priority assigns their strongest tiers.")
+    end
+    if request.quotes and result.normal>0 then table.insert(result.notes,"Estimated costs use fresh character/licence next-hire prices, the selected race's reputation and the observed 1 / 1.5 / 2.5 / 5 hire progression. Later amounts assume that context stays unchanged and round to the nearest copper; final charges remain unknown until the server applies them. This is not a price lock or an exact cheapest-plan claim.") end
+    local mode=C.PlannerLoadPriority(request)
+    local priority={}; for _,id in ipairs(mode=="custom" and C.PlannerPriorityOrder(request) or C.PLANNER_PRIORITY) do table.insert(priority,C.PlannerPriorityLabel(id)) end
+    table.insert(result.notes,"Tier priority: "..table.concat(priority," > ")..". "..(request.ultraGold==true and "Ultra keeps earlier roles at the stronger licence where eligible alternatives allow; " or request.saveGold~=false and "Preferred three normals per source comes first; " or "Highest chosen licences come first, including fourth hires; ").."eligibility, capacity and each chosen source tier can limit this order. No tier is upgraded.")
+    for i=1,40 do if not entries[i] then entries[i]={kind="empty"} end end
+    for _,list in ipairs({newLegacy,normal}) do
+        for _,e in ipairs(list) do local slot=C.FirstEmptySlot(entries,40); entries[slot]=e end
+    end
+    maxAnchor=0
+    for i,e in ipairs(entries) do
+        if e.kind=="legacy" then pinned[i]=nil end
+        if pinned[i] then maxAnchor=math.max(maxAnchor,i) end
+    end
+    local groups=math.max(math.ceil(result.total/5),math.ceil(maxAnchor/5))
+    -- Old companion slots no longer set group bounds. Bring any such row into
+    -- the proposed range before reservations so a sparse legacy cannot be missed.
+    for i=groups*5+1,40 do
+        if C.IsFilledEntry(entries[i]) then
+            local dest=assert(C.FirstEmptySlot(entries,groups*5),"Proposed groups lost capacity")
+            entries[dest],entries[i]=entries[i],entries[dest]
+        end
+    end
+    result.grouping=C.PlannerGroup(entries,pinned,groups); result.score=result.grouping.score; result.groups=groups
+    if request.ultraGold==true and result.normal>0 then
+        local selected,stats=C.PlannerUltraApply(entries,chosen,request)
+        if not selected then return nil,stats end
+        result.allocation=selected;result.ultra=stats;result.fourths=0
+        for _,a in ipairs(selected) do if a.fourth then result.fourths=result.fourths+1 end end
+        if stats.replacements>0 then
+            table.insert(result.notes,"Ultra gold saving: moved "..stats.replacements.." highest-licence fourth hire(s) to another selected character at the next lower chosen licence. Estimated saving versus the strongest-licence plan: "..C.PlannerMoney(stats.savedCopper)..".")
+        else table.insert(result.notes,"Ultra gold saving: no cheaper eligible next-lower-licence alternative fits this composition. Highest-licence fourth hires stay when needed.") end
+        table.insert(result.notes,"Ultra overrides Save gold only while selected. It compares fresh discounted estimates in final hire order; a lower licence is not always cheaper. Each character keeps its chosen licence. Unselected characters, missing prices, unavailable capacity and skipped licence tiers are not alternatives. Server charges may differ; this is not an exact cheapest-plan claim.")
+    end
+    for _,note in ipairs(result.grouping.notes) do table.insert(result.notes,note) end
+    -- Report unmet soft preferences, including forced anchor compromises.
+    local physicalWithout,rangedWithout,priestWithout,paladinWithout=0,0,0,0
+    for g=1,groups do
+        local physical,ranged,shaman,priest,paladin=false,false,false,false,false
+        for i=(g-1)*5+1,g*5 do
+            local e=entries[i]
+            if C.IsFilledEntry(e) then
+                physical=physical or C.PlannerPhysical(e); ranged=ranged or (e.role=="rdps" and not C.PlannerPhysical(e))
+                shaman=shaman or e.class=="shaman"; priest=priest or (e.class=="priest" and e.role=="healer"); paladin=paladin or (e.class=="paladin" and e.role=="healer")
+            end
+        end
+        if physical and not shaman then physicalWithout=physicalWithout+1 end
+        if ranged then
+            if not priest then priestWithout=priestWithout+1 end
+            if not paladin then paladinWithout=paladinWithout+1 end
+            if not priest and not paladin then rangedWithout=rangedWithout+1 end
+        end
+    end
+    if physicalWithout>0 then table.insert(result.notes,physicalWithout.." physical group(s) without Shaman support; counts, available slots and fixed anchors take priority.") end
+    if priestWithout>0 or paladinWithout>0 then table.insert(result.notes,"Ranged groups without a Priest healer: "..priestWithout.."; without a Paladin healer: "..paladinWithout..". Supplies/anchors limit coverage.") end
+    local overflow,unmatched,bestCaster=0,0,0
+    for i,e in ipairs(entries) do
+        if i>20 and C.PlannerMelee(e) then overflow=overflow+1 end
+        bestCaster=math.max(bestCaster,C.PlannerCasterPreference(e))
+    end
+    for i,e in ipairs(entries) do
+        if C.IsFilledEntry(e) and e.class=="druid" and e.role=="rdps" then
+            local best=0; local g=math.floor((i-1)/5)+1
+            for j=(g-1)*5+1,g*5 do best=math.max(best,C.PlannerCasterPreference(entries[j])) end
+            if best<bestCaster then unmatched=unmatched+1 end
+        end
+    end
+    if overflow>0 then table.insert(result.notes,overflow.." tank/melee row(s) remain outside groups 1-4; fixed anchors and available front slots limit placement.") end
+    if unmatched>0 then table.insert(result.notes,unmatched.." Balance Druid(s) could not share their preferred caster group; fixed anchors, five-person groups and other preferences compete.") end
+    table.insert(result.notes,"Groups prefer tanks/melee in groups 1-4, including melee Paladins/Druids with Warriors/Shamans. Balance prefers included legacy Mage/Warlock, then known Fire Mage, otherwise Warlock. Healer Paladins spread across remaining unconstrained groups after these choices.")
+    table.insert(result.notes,"Shaman reservations cover groups 1-5 first, one per group in slots 5/10/15/20/25 when supplied; Group2 prefers a normal Shaman. Extra Shamans cover other groups before stacking. Tanks prefer Group1; Group2 prefers Hunter/Rogue/feral-or-bear/normal Warrior MDPS. Physical groups fill early, with Paladin then Priest healing in their last partial group. Balance receives its preferred included caster before Shadow Priests take remaining Warlocks in full-identity order. These staged preferences are deterministic, not a universal optimum or proof of live buffs. Normal and legacy companions regroup without changing identity, source, tier or commands. "..(request.player and "Verified humans reserve the tail from40, self40; unresolved guest anchors remain distinct and capacity conflicts are noted. Unused ordinary slots precede the human tail." or "Existing explicit anchors stay fixed."))
+    result.plan.entries=entries
+    C.PlannerEstimate(result,chosen,request)
+    return result
 end

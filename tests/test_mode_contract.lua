@@ -102,8 +102,8 @@ do
     local first = assert(string.find(source, "function C.AccountScroll(value)", 1, true))
     local last = assert(string.find(source, "CloseContext = function()", first, true))
     local body = string.sub(source, first, last-1)
-    local collectStart=assert(string.find(source,'function C.AccountReadLocal(records)',1,true))
-    local collectEnd=assert(string.find(source,'function C.LicenseSidebar(y)',collectStart,true))
+    local collectStart=assert(string.find(source,'function C.AccountReadLocal(records, validatedPreset)',1,true))
+    local collectEnd=assert(string.find(source,'function C.LicenseSidebar(y,preset)',collectStart,true))
     body=string.sub(source,collectStart,collectEnd-1)..body
     local function widget(parent)
         local w = {parent=parent, fonts={}, scripts={}, shown=true}
