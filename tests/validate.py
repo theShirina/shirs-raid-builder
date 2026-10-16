@@ -51,8 +51,64 @@ PUBLIC_FILES = {
     "tests/test_handoff.lua",
     "tests/test_handoff_ui.lua",
     "tests/test_handoff_safety.lua",
+    "tests/test_handoff_chat.lua",
+    "tests/test_quiet_mode.lua",
+    "tests/test_quick_hire.lua",
+    "tests/test_quick_followup.lua",
+    "tests/test_quick_final_choice.lua",
+    "tests/test_planner_vanilla_ui.lua",
+    "tests/test_random_hire.lua",
+    "tests/test_random_runtime.lua",
+    "tests/test_stop.lua",
+    "tests/test_ui_integration.lua",
+    "tests/test_planner.lua",
+    "tests/test_planner_refinements.lua",
+    "tests/test_planner_sources_compact.lua",
+    "tests/test_planner_sources_wrap.lua",
+    "tests/test_planner_selectors.lua",
+    "tests/test_planner_composition_render.lua",
+    "tests/test_planner_staged_groups.lua",
+    "tests/test_planner_constraints.lua",
+    "tests/test_planner_identities.lua",
+    "tests/test_planner_human_tail.lua",
+    "tests/test_planner_save_gold.lua",
+    "tests/test_planner_quotes.lua",
+    "tests/test_planner_linked_quotes.lua",
+    "tests/test_planner_quote_safety.lua",
+    "tests/test_planner_quote_curve.lua",
+    "tests/test_planner_caster_block.lua",
+    "tests/test_planner_estimates.lua",
+    "tests/test_planner_race_defaults.lua",
+    "tests/test_planner_auto_sync.lua",
+    "tests/test_planner_draft_totals.lua",
+    "tests/test_planner_tab_selection.lua",
+    "tests/test_visible_plan_prices.lua",
+    "tests/test_visible_price_ordinals.lua",
+    "tests/test_visible_price_safety.lua",
+    "tests/test_visible_native_sync.lua",
+    "tests/test_planner_ultra.lua",
+    "tests/test_planner_ultra_ui.lua",
+    "tests/test_planner_wheel_dropdown.lua",
+    "tests/test_pricing_bounds.lua",
+    "tests/test_native_review.lua",
+    "tests/test_ultra_priority.lua",
+    "tests/test_ultra_global.lua",
+    "tests/test_save_plan.lua",
+    "tests/test_performance_transactions.lua",
+    "tests/test_performance_quotes.lua",
+    "tests/test_performance_pools.lua",
+    "tests/test_price_persistence.lua",
+    "tests/test_quote_rate.lua",
+    "tests/test_hire_footer.lua",
+    "tests/test_planner_roster.lua",
+    "tests/test_planner_priority.lua",
+    "tests/test_planner_player.lua",
+    "tests/test_planner_ui.lua",
+    "tests/test_planner_execution.lua",
     "tests/test_run_authorization.lua",
     "tests/test_local_hire.lua",
+    "tests/test_present_legacy.lua",
+    "tests/test_normal_legacy.lua",
     "tests/test_account_sync.lua",
     "tests/test_plan_share.lua",
     "tests/test_plan_share_ui.lua",
@@ -162,10 +218,40 @@ def main() -> int:
         marker = "PASS raid sync:" if case == "test_raid_sync.lua" else "Shir's Raid Builder " + label + " tests: PASS"
         assert marker in output, case + " did not report success: " + output
 
-    for case, label in [("test_planning_characters.lua", "planning character"), ("test_handoff.lua", "handoff core"), ("test_handoff_ui.lua", "handoff UI"), ("test_handoff_safety.lua", "handoff safety"), ("test_run_authorization.lua", "run authorization"), ("test_local_hire.lua", "local hire")]:
+    for case, label in [("test_planning_characters.lua", "planning character"), ("test_handoff.lua", "handoff core"), ("test_handoff_ui.lua", "handoff UI"), ("test_handoff_safety.lua", "handoff safety"), ("test_handoff_chat.lua", "handoff chat"), ("test_quiet_mode.lua", "quiet mode"), ("test_quick_hire.lua", "quick hire"), ("test_stop.lua", "stop"), ("test_ui_integration.lua", "integrated UI"), ("test_run_authorization.lua", "run authorization"), ("test_local_hire.lua", "local hire"), ("test_present_legacy.lua", "present legacy"), ("test_normal_legacy.lua", "normal legacy")]:
         run([args.luac, "-p", str(ROOT / "tests" / case)])
         output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
         assert "Shir's Raid Builder " + label + " tests: PASS" in output
+
+    for case, label in [("test_quick_final_choice.lua", "quick final choice"), ("test_planner_vanilla_ui.lua", "planner Vanilla UI"), ("test_quick_followup.lua", "quick followup"), ("test_random_hire.lua", "random hire"), ("test_random_runtime.lua", "random runtime"), ("test_planner.lua", "planner"), ("test_planner_ui.lua", "planner UI"), ("test_planner_execution.lua", "planner execution")]:
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "Shir's Raid Builder " + label + " tests: PASS" in output
+
+    for case, label in [("test_planner_refinements.lua", "planner refinements"), ("test_planner_roster.lua", "planner roster"), ("test_planner_priority.lua", "planner priority"), ("test_planner_player.lua", "planner player")]:
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "Shir's Raid Builder " + label + " tests: PASS" in output
+
+    for case, label in [("test_planner_sources_compact.lua", "compact sources"), ("test_planner_sources_wrap.lua", "sources wrap"), ("test_planner_selectors.lua", "composition selectors"), ("test_planner_composition_render.lua", "composition rendering"), ("test_planner_staged_groups.lua", "staged grouping")]:
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "Shir's Raid Builder " + label + " tests: PASS" in output
+
+    for case in ("test_planner_constraints.lua", "test_planner_identities.lua", "test_planner_human_tail.lua", "test_planner_save_gold.lua", "test_planner_quotes.lua", "test_planner_linked_quotes.lua", "test_planner_quote_safety.lua", "test_planner_quote_curve.lua", "test_planner_caster_block.lua", "test_planner_estimates.lua", "test_planner_race_defaults.lua", "test_planner_auto_sync.lua", "test_planner_draft_totals.lua", "test_planner_tab_selection.lua", "test_visible_plan_prices.lua", "test_visible_price_ordinals.lua", "test_visible_price_safety.lua", "test_visible_native_sync.lua", "test_planner_ultra.lua", "test_planner_ultra_ui.lua", "test_planner_wheel_dropdown.lua"):
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "tests: PASS" in output, case
+
+    for case in ("test_pricing_bounds.lua", "test_native_review.lua", "test_ultra_priority.lua", "test_ultra_global.lua", "test_save_plan.lua", "test_price_persistence.lua", "test_quote_rate.lua", "test_hire_footer.lua"):
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "tests: PASS" in output, case
+
+    for case in ("test_performance_transactions.lua", "test_performance_quotes.lua", "test_performance_pools.lua"):
+        run([args.luac, "-p", str(ROOT / "tests" / case)])
+        output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
+        assert "0 failed" in output, case
 
     build_script = ROOT / "scripts" / "build_release.py"
     run([sys.executable, str(build_script)])

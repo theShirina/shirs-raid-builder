@@ -6,7 +6,25 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-1.0.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v1.0/ShirsRaidBuilder-1.0.zip) from the [v1.0 release page](https://github.com/theShirina/shirs-raid-builder/releases/tag/v1.0).
+Download [ShirsRaidBuilder-1.1.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v1.1/ShirsRaidBuilder-1.1.zip) from the [v1.1 release page](https://github.com/theShirina/shirs-raid-builder/releases/tag/v1.1).
+
+## What's new in 1.1
+
+### Added
+
+- Build a 40-slot composition from selected characters and licences. Add normal hires, legacy characters, or the current player; set role counts, synergy and hire priority before building the proposed groups.
+- Check estimated hire costs across selected accounts. The proposal shows totals and per-character estimates, supports manual refresh, and keeps unknown prices marked as unknown. A reviewed proposal can still be saved after its estimate expires; the old estimate is marked stale. Estimates are not a price lock.
+- Use **Save gold** or **Ultra** when building a proposal. Ultra can move a hire to another eligible selected character at a lower chosen licence when its quoted cost is lower and the composition and priority still fit.
+- Use **Quick Hire** for a selected companion or **Random** to choose a hire, with a final choice before sending a hire command.
+- Filter displayed messages and choose whether routine addon messages appear in chat.
+
+### Changed
+
+- **Stop** now ends local hiring, whispers, sorting, and unsent linked hand-offs. A group already sent to another account must be stopped there.
+
+### Fixed
+
+- Dropdowns could stay open after their panel closed; they now close with the panel.
 
 ## What's new in 1.0
 
@@ -37,7 +55,7 @@ Download [ShirsRaidBuilder-1.0.zip](https://github.com/theShirina/shirs-raid-bui
 
 - Built for Microbot WoW 1.12.1 and Interface `11200`
 - Uses Microbot companion, legacy hire, deny, setup, and raid roster commands
-- All accounts in a linked run must use v1.0. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
+- All accounts in a linked run must use v1.1. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
 - Linked hires need an approved link and recent synchronization. Old sidebar snapshots are display-only and do not authorize a run
 - The first link requires the builder to be open on the receiving account. Synchronization runs on login or when you click **Refresh Synchronization**. Opening `/srb` is display-only and does not start synchronization.
 - Accounts that log in close together can now synchronize without waiting for a long timeout.
@@ -49,7 +67,7 @@ Download [ShirsRaidBuilder-1.0.zip](https://github.com/theShirina/shirs-raid-bui
 - Other linked accounts' players also use raid slots but are not counted as board cards; ten players leave room for 30 companions
 - Run profile names allow letters, numbers, spaces, `_`, apostrophes, and hyphens, up to 48 characters
 - The server may report a companion's owner as the character that sent the hire. Re-runs match by the hire-from character, so check the board before running a plan again
-- Stop requested on a receiving account is not reported to the leader immediately; use **Cancel process** on the leader if a linked run stalls
+- Stop on the main builder ends local hiring, whispers, sorting and unsent linked hand-offs. A group already delivered to another account must be stopped there too
 - Linked-run handoff messages appear in both accounts' chat frames; the first handoff can take several seconds
 
 ## Installation
@@ -80,7 +98,8 @@ Profiles are stored in the account-wide `ShirsRaidBuilderDB` SavedVariable.
 - The recipient must explicitly approve a copy or a merge; a merge keeps occupied destination slots, reserves the incoming plan's original positions where they are free, and moves conflicting incoming cards to the lowest remaining free slots
 - If a merge does not fit, the recipient's plan is left unchanged; a shared plan is never executed automatically
 - Preview the complete command queue without sending anything
-- Stop a running hire or whisper queue
+- Use **Quick Hire** for a selected or random hire; confirm the choice before the command is sent
+- Stop local hiring, whispers, sorting and unsent linked hand-offs with **Stop**. Stop a group on its receiving account after it has been delivered
 - Use **Link Account**, **Refresh Synchronization**, **Share Current Plan**, and **Hire status** to work with linked accounts. The recipient must approve a copied or merged plan; sharing never executes it
 - Use `/srbhandoff` to open Hire status. The initiating account's plan rules apply across linked hires
 - Deny and setup rules are not copied by Share Current Plan; set the rules on the initiating plan before Execute

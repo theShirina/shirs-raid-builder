@@ -53,14 +53,14 @@ For targeted checks from `tests/`:
 - After a normal hire, wait for its companion to join the group, then wait 1 second before the next hire. If no join is seen, keep the 7.5–8.5-second fallback wait. Preserve reply-aware whisper sequencing unless the task explicitly changes the protocol.
 - Treat GRINFO and other Microbot responses as runtime data. Do not claim live coverage from static source inspection or synthetic tests.
 - Use only WoW 1.12 and Lua 5.0.3-compatible syntax and APIs. Do not introduce Lua 5.1+ features or modern WoW APIs.
-- Keep the public repository free of account data, SavedVariables, private client files, credentials, personal paths, and generated private snapshots.
+- Keep the public repository free of account data, SavedVariables, private game data, credentials, personal paths, and generated private snapshots.
 - Keep the addon ZIP limited to the six files defined by `scripts/build_release.py`; do not place repository instructions, tests, or build scripts in the shipped addon folder.
 - Do not change SavedVariables or client data merely to make a test pass.
 
 ## Verification boundaries
 
 - Run the full validator with exact Lua 5.0.3 before handing off release work, plus targeted tests for the changed behavior when practical.
-- Static tests and package validation do not prove live WoW/Microbot behavior. Stefán performs final live QA in the designated isolated test client; do not block implementation or claim that live QA was completed by an agent.
+- Static tests and package validation do not prove live WoW/Microbot behavior. Stefán performs final live QA in an isolated development copy; do not block implementation or claim that live QA was completed by an agent.
 - When reporting a live issue, verify the invoked macro/button, loaded TOC/XML path, live function source, and active addon copy before attributing ownership.
-- Package updates target the designated closed test-client installation by default, but never overwrite unrelated or custom installs.
+- Package updates target the designated closed development copy by default, but never overwrite unrelated or custom installs.
 - Do not commit generated archives, hashes, account data, client files, secrets, or unrelated changes.

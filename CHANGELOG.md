@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1
+
+### Added
+
+- Build a 40-slot composition from selected characters and licences, then set role counts, synergy, and hire priority before creating the proposed groups. The planner can include normal hires, legacy characters, and the current player.
+- Check estimated hire prices across selected accounts. Build Proposal and manual refresh show an estimated total and per-character costs; unknown prices stay unknown. A reviewed proposal can still be saved after its estimate expires, and the old estimate is marked stale.
+- Use Save gold or Ultra when building a proposal. Ultra can move a hire to another eligible selected character at a lower chosen licence when its quoted price is lower and the composition and priority still fit.
+- Use Quick Hire for a selected companion or Random to choose one, with a final choice before hiring.
+- Filter displayed messages and choose whether routine addon messages appear in chat.
+
+### Changed
+
+- Stop ends local hiring, whispers, sorting, and unsent linked hand-offs. A group already delivered to another account still needs Stop there.
+
+### Fixed
+
+- Dropdowns could stay open after their panel closed; they now close with the panel.
+
 ## 1.0
 
 ### Added

@@ -50,12 +50,14 @@ local function boot(saved, player)
     function methods:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) and 1 or nil end
     function methods:Show() local old=self.shown; self.shown=true; if not old then dispatch(self,'OnShow') end end
     function methods:Hide() local old=self.shown; self.shown=false; if old then dispatch(self,'OnHide') end end
-    function methods:Enable() self.enabled=true end
-    function methods:Disable() self.enabled=false end
-    function methods:IsEnabled() return self.enabled and 1 or nil end
+    local buttonMethods={}
+    function buttonMethods:Enable() self.enabled=true end
+    function buttonMethods:Disable() self.enabled=false end
+    function buttonMethods:IsEnabled() return self.enabled and 1 or nil end
     function methods:SetChecked(v) self.checked=v and 1 or nil end
     function methods:GetChecked() return self.checked end
-    function methods:SetFocus() self.focus=true; dispatch(self,'OnEditFocusGained') end
+    function methods:SetFocus() if self.kind=='EditBox' and self.keyboard==false then return end; self.focus=true; dispatch(self,'OnEditFocusGained') end
+    function methods:EnableKeyboard(value) self.keyboard=value end
     function methods:ClearFocus() self.focus=false; dispatch(self,'OnEditFocusLost') end
     function methods:HasFocus() return self.focus and 1 or nil end
     function methods:GetEffectiveScale() return 1 end
@@ -69,14 +71,21 @@ local function boot(saved, player)
     local noop=function() end
     for _,name in ipairs({'SetBackdropBorderColor','SetJustifyH','SetJustifyV','SetFontObject','SetFont','SetNonSpaceWrap','SetAutoFocus','SetMaxLetters','EnableMouse','SetMovable','RegisterForDrag','RegisterForClicks','StartMoving','StopMovingOrSizing','SetClampedToScreen','SetScale','SetAlpha','SetOwner','AddLine','AddDoubleLine','SetTexture','SetTexCoord','SetVertexColor','SetBlendMode','HighlightText','SetMultiLine','SetNumeric','SetNormalTexture','SetHighlightTexture','SetPushedTexture'}) do methods[name]=noop end
     function methods:SetTextColor(...) self.textColor=arg end
+    function methods:SetTextInsets(...) self.textInsets=arg end
     local function widget(kind,name,parent)
         local w={kind=kind,name=name,parent=parent,shown=true,enabled=true,scripts={},events={},fonts={}}
         setmetatable(w,{__index=methods}); table.insert(frames,w)
+        if kind=='Button' or kind=='CheckButton' then
+            w.Enable=buttonMethods.Enable; w.Disable=buttonMethods.Disable; w.IsEnabled=buttonMethods.IsEnabled
+        end
         if name then env[name]=w end
         return w
     end
     function methods:CreateFontString(name) local f=widget('FontString',name,self); table.insert(self.fonts,f); return f end
-    function methods:CreateTexture(name) return widget('Texture',name,self) end
+    function methods:CreateTexture(name,layer) local texture=widget('Texture',name,self); texture.layer=layer; return texture end
+    function methods:EnableMouse(value) self.mouse=value end
+    function methods:RegisterForClicks(...) self.clicks=arg end
+    function methods:SetBackdropBorderColor(...) self.borderColor=arg end
     env.CreateFrame=widget; env.UIParent=widget('Frame','UIParent'); env.GameTooltip=widget('Tooltip','GameTooltip')
     env.SlashCmdList={}; env.UISpecialFrames={}
     env.GetAddOnMetadata=function() return '0.74' end
@@ -99,8 +108,15 @@ local function boot(saved, player)
     for _,name in ipairs({'ShirsRaidBuilder_Core.lua','ShirsRaidBuilder_Abilities.lua','ShirsRaidBuilder.lua'}) do
         local fn=assert(loadfile('../addon/ShirsRaidBuilder/'..name)); setfenv(fn,env); fn()
     end
+    -- Older planner regressions use a synchronous synthetic metadata transport.
+    -- The dedicated quote suite restores nativeQuoteStart and drives its events.
+    local nativeQuoteStart=env.ShirsRaidBuilderCore.PlannerQuoteStart
+    if nativeQuoteStart then env.ShirsRaidBuilderCore.PlannerQuoteStart=function(sources,request,done)
+        local quotes={};for _,s in ipairs(sources) do local sel=request.sources[s.key];if sel and sel.selected then quotes[s.key]={name=s.name,tier=sel.tier,accountId=s.accountId,base=0,ex=0,mask='0',friendly='0',qbase=0,qex=0,count=4-(s.capacity or 4),max=4,received=env.GetTime()} end end
+        done(quotes);return true
+    end end
     env.SlashCmdList.SHIRSRAIDBUILDER('demo') -- Opens real main constructor without server requests.
-    local h={env=env,C=env.ShirsRaidBuilderCore,frames=frames,messages=messages}
+    local h={env=env,C=env.ShirsRaidBuilderCore,frames=frames,messages=messages,nativeQuoteStart=nativeQuoteStart}
     function h:fire(w,eventName,value) assert(w and w.scripts[eventName],eventName..' handler missing'); dispatch(w,eventName,value) end
     function h:click(w) assert(w and w:IsVisible() and w:IsEnabled(),'cannot click hidden/disabled widget'); self:fire(w,'OnClick','LeftButton') end
     function h:button(parent,label)

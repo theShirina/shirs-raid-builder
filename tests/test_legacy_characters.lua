@@ -284,7 +284,7 @@ test('addon legacy response reads arg2 through the registered receive handler',f
     h.env.arg3='WHISPER'; h.env.arg4='nexus'
     local listeners=0
     for _,w in ipairs(h.frames) do
-        if w.events.CHAT_MSG_ADDON and w.events.CHAT_MSG_MONSTER_WHISPER then
+        if w.events.CHAT_MSG_ADDON and w.events.CHAT_MSG_MONSTER_WHISPER and w~=h.C.plannerQuoteDriver then
             listeners=listeners+1; h:fire(w,'OnEvent','nexus')
         end
     end

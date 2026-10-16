@@ -36,9 +36,9 @@ local function manual(h)
  end
  return table.concat(found,', ')
 end
--- Main Hire's group/status entry opens an optional, status-only process panel.
+-- The optional slash status panel is read-only; main Stop owns recovery.
 local function status(h)
- h:click(h.env.ShirsRaidBuilderMainFrame.groupActorsBtn)
+ h.env.SlashCmdList.SHIRSRAIDBUILDERHANDOFF()
  local panel=h.C.handFrame
  assert(panel and panel:IsShown() and panel:GetFrameStrata()=='FULLSCREEN_DIALOG','process status panel missing')
  local found=manual(h); assert(found=='','Hire status entry exposes the manual handoff controller: '..found)
@@ -66,19 +66,19 @@ local steps={}; for _,row in ipairs(active.steps) do table.insert(steps,row.grou
 assert(table.concat(steps,',')=='1=Alice,2=Bob,3=Alice','board identity not derived: '..table.concat(steps,','))
 assert(manual(a)=='','Execute exposed manual handoff controls: '..manual(a))
 a:click(main.executeBtn); assert(hires(a)==1,'duplicate execution')
--- Interrupted work stays cancellable from the status panel; Stop stays on the builder.
-local panel=status(a); a:button(panel,'Cancel process'); a:button(main,'Stop'); panel:Hide()
+-- Interrupted work stays cancellable from the main builder.
+local panel=status(a); a:button(main,'Stop'); panel:Hide()
 -- Linked groups auto-run from this single leader Execute (test_run_authorization.lua).
 -- Reload mid-group never resumes, replays or retries submitted hires.
 local saved=a.env.ShirsRaidBuilderDB
 local restored=client('Alice',saved); panel=status(restored)
 assert(saved.handoff.active.phase=='interrupted' and hires(restored)==0,'reload resumed actions')
 pump(restored,60); assert(hires(restored)==0 and not restored.C.handAuthority,'interrupted process retried hires automatically')
-restored:click(restored:button(panel,'Cancel process'))
-assert(saved.handoff.active.phase=='cancelled' and not restored.C.handAuthority,'Cancel process did not end the run')
+panel:Hide(); restored:click(restored:button(restored.env.ShirsRaidBuilderMainFrame,'Stop'))
+assert(saved.handoff.active.phase=='cancelled' and not restored.C.handAuthority,'main Stop did not end the run')
 pump(restored,60); assert(hires(restored)==0,'cancelled process executed')
 local corrupt=client('Alice',{handoff={active={phase='ready',realm='FixtureRealm',expires=1800000100,steps=false}}})
-corrupt:click(corrupt.env.ShirsRaidBuilderMainFrame.groupActorsBtn)
+status(corrupt):Hide()
 assert(not corrupt.env.ShirsRaidBuilderDB.handoff.active,'invalid saved handoff remained active')
 -- Main title stays readable beside the top-bar controls in both modes, at UI scales
 -- 1 and 0.64, from the real constructor's anchors. Static stand-in only: harness
@@ -101,7 +101,7 @@ do
  local function readable(text)
   assert(title and title.parent==frame and title:IsVisible(),'main title missing or hidden')
   assert(title:GetText()==text,'main title "'..tostring(title:GetText())..'" expected "'..text..'"')
-  for _,label in ipairs({'X','Link Account','Refresh Synchronization','Hire status','Share Current Plan','Import'}) do t:button(frame,label) end
+  for _,label in ipairs({'X','Link Account','Refresh Synchronization','Share Current Plan','Import'}) do t:button(frame,label) end
   for _,s in ipairs({1,0.64}) do
    assert(not title.width or title.width>=glyphs(title,s),'title width truncates "'..text..'" at scale '..s)
    local l,b,r,u=box(title,s)
