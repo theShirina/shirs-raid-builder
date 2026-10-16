@@ -13,7 +13,7 @@ Download [ShirsRaidBuilder-1.1.zip](https://github.com/theShirina/shirs-raid-bui
 ### Added
 
 - Build a 40-slot composition from selected characters and licences. Add normal hires, legacy characters, or the current player; set role counts, synergy and hire priority before building the proposed groups.
-- Check estimated hire costs across selected accounts. The proposal shows totals and per-character estimates, supports manual refresh, and keeps unknown prices marked as unknown. A reviewed proposal can still be saved after its estimate expires; the old estimate is marked stale. Estimates are not a price lock.
+- Check estimated hire costs across selected accounts. Build Proposal refreshes selected linked accounts when needed; the proposal shows totals and per-character estimates, supports manual refresh, and keeps unknown prices marked as unknown. A reviewed proposal can still be saved after its estimate expires; the old estimate is marked stale. Estimates are not a price lock.
 - Use **Save gold** or **Ultra** when building a proposal. Ultra can move a hire to another eligible selected character at a lower chosen licence when its quoted cost is lower and the composition and priority still fit.
 - Use **Quick Hire** for a selected companion or **Random** to choose a hire, with a final choice before sending a hire command.
 - Filter displayed messages and choose whether routine addon messages appear in chat.
@@ -25,6 +25,7 @@ Download [ShirsRaidBuilder-1.1.zip](https://github.com/theShirina/shirs-raid-bui
 ### Fixed
 
 - Dropdowns could stay open after their panel closed; they now close with the panel.
+- The current player could inflate Hire role counts. Humans now appear separately without changing the 40-slot total.
 
 ## What's new in 1.0
 
