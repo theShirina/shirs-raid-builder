@@ -100,6 +100,8 @@ PUBLIC_FILES = {
     "tests/test_price_persistence.lua",
     "tests/test_quote_rate.lua",
     "tests/test_hire_footer.lua",
+    "tests/test_human_remove.lua",
+    "tests/test_board_plan_lifecycle.lua",
     "tests/test_planner_roster.lua",
     "tests/test_planner_priority.lua",
     "tests/test_planner_player.lua",
@@ -243,7 +245,7 @@ def main() -> int:
         output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
         assert "tests: PASS" in output, case
 
-    for case in ("test_pricing_bounds.lua", "test_native_review.lua", "test_ultra_priority.lua", "test_ultra_global.lua", "test_save_plan.lua", "test_price_persistence.lua", "test_quote_rate.lua", "test_hire_footer.lua"):
+    for case in ("test_pricing_bounds.lua", "test_native_review.lua", "test_ultra_priority.lua", "test_ultra_global.lua", "test_save_plan.lua", "test_price_persistence.lua", "test_quote_rate.lua", "test_hire_footer.lua", "test_human_remove.lua"):
         run([args.luac, "-p", str(ROOT / "tests" / case)])
         output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
         assert "tests: PASS" in output, case
@@ -252,6 +254,10 @@ def main() -> int:
         run([args.luac, "-p", str(ROOT / "tests" / case)])
         output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
         assert "0 failed" in output, case
+
+    run([args.luac, "-p", str(ROOT / "tests" / "test_board_plan_lifecycle.lua")])
+    lifecycle_output = run([args.lua, str(ROOT / "tests" / "test_board_plan_lifecycle.lua")], cwd=ROOT / "tests")
+    assert "board plan lifecycle: PASS" in lifecycle_output
 
     build_script = ROOT / "scripts" / "build_release.py"
     run([sys.executable, str(build_script)])

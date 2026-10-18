@@ -1243,14 +1243,15 @@ end
 function C.PadRaidSlots(entries, size)
     local want = size or 40
     if type(entries) ~= "table" then entries = {} end
-    for i = 1, table.getn(entries) do
+    -- Tail placement leaves holes before occupied human slots. Lua 5.0 may
+    -- report a short length there; appending would overwrite the tail.
+    for i = 1, math.max(want, table.getn(entries)) do
         if type(entries[i]) ~= "table" then
             entries[i] = {kind="empty"}
         elseif not C.IsFilledEntry(entries[i]) then
             entries[i].kind = "empty"
         end
     end
-    while table.getn(entries) < want do table.insert(entries, {kind="empty"}) end
     return entries
 end
 

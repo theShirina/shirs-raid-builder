@@ -1,7 +1,7 @@
-Shir's Raid Builder 1.1
+Shir's Raid Builder 1.2
 
 Built for Microbot WoW 1.12.1.
-Download: https://github.com/theShirina/shirs-raid-builder/releases/download/v1.1/ShirsRaidBuilder-1.1.zip
+Download: https://github.com/theShirina/shirs-raid-builder/releases/download/v1.2/ShirsRaidBuilder-1.2.zip
 
 INSTALL
 1. Close WoW.
@@ -14,7 +14,9 @@ Hiring commands can spend gold. Back up your WTF folder and use Preview before
 Execute. Import replaces the current profile after its overwrite warning.
 Opening /srb is display-only and does not start synchronization.
 Synchronization runs on login or when you click Refresh Synchronization.
-All accounts in a linked run must use v1.1. Accept links only for accounts you trust.
+All accounts in a linked run must use v1.2. Accept links only for accounts you trust.
+Other human-player entries can be removed from a plan without changing the live group.
+The current-character slot stays protected.
 Build Proposal also refreshes selected trusted accounts when needed, then
 checks hire prices without closing the builder. Keep both accounts online
 with the same updated code; a matching version label alone is not enough.

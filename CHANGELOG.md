@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2
+
+### Added
+
+- Remove other human-player entries from a plan without changing the live group. The current-character slot stays protected.
+
+### Fixed
+
+- Card borders now stay intact after moving characters or switching plans.
+- Filling empty slots no longer overwrites occupied slots at the end of a plan.
+
 ## 1.1
 
 ### Added

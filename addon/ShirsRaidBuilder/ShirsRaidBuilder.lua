@@ -821,13 +821,23 @@ local function FindDropSlot(ignoreFrame)
     return best
 end
 
+-- Only the current character is mandatory. Other explicit human rows are
+-- plan occupants, not protected leaders and never live-uninvite targets.
+function C.CanRemoveBoardEntry(entry)
+    if not C.IsFilledEntry(entry) then return false end
+    if not C.IsPlayerEntry(entry) then return true end
+    local you = type(UnitName) == "function" and C.Trim(UnitName("player")) or ""
+    local name = C.Trim(entry.charName)
+    return you ~= "" and name ~= "" and string.lower(name) ~= string.lower(you)
+end
+
 local function RemoveEntry(index)
     local preset = EnsureDB()
     local entry = preset.entries[index]
-    if C.IsFilledEntry(entry) then
+    if C.CanRemoveBoardEntry(entry) then
         preset.entries[index] = {kind="empty"}
         RefreshComposition()
-        SetStatus("Removed " .. (entry.account or entry.charName or "entry") .. ".")
+        SetStatus("Removed " .. (entry.account or entry.charName or "entry") .. " from this plan. The live group is unchanged.")
     end
 end
 
@@ -844,6 +854,11 @@ function C.BoardRow(kind,index,preset,entry)
     row.boardGeneration=(row.boardGeneration or 0)+1
     row:ClearAllPoints();row:SetAlpha(1);row:Enable();row:Show()
     return row
+end
+
+-- Keep the native border textures when a fixed-size board card is reused.
+function C.BoardBackdrop(row)
+    if not row.boardBackdrop then row:SetBackdrop(DROP_BG);row.boardBackdrop=true end
 end
 
 function C.BoardRowCurrent(row,preset,entry,index,generation)
@@ -878,9 +893,10 @@ function C.ReleaseBoardRows()
 end
 
 local function AddRowActionButtons(row, index, entry, preset)
-    if C.IsPlayerEntry(entry) then return end
+    if not C.CanRemoveBoardEntry(entry) then return end
     -- Compact, beside the name line, so the card's bottom right can show the hire's tier.
     if not row.removeButton then row.removeButton=MakeButton(row,"X",16,82,-3,nil);row.removeButton:SetHeight(12) end
+    C.SetTip(row.removeButton,"Remove from plan","Remove this occupant from this plan only. The live group is unchanged; no one is kicked or hired.")
     row.removeButton:Enable();row.removeButton:Show()
     row.removeButton:SetBackdropColor(0.08,0.12,0.20,1.0);row.removeButton:SetBackdropBorderColor(0.45,0.58,0.78,1.0)
     row.removeButton.label:SetTextColor(0.90,0.93,1.0)
@@ -949,7 +965,7 @@ local function RenderEntry(index, entry, y, spawnNumber, x, preset)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     row:SetWidth(100); row:SetHeight(28)
     row:SetPoint("TOPLEFT", compositionContent, "TOPLEFT", x, y)
-    row:SetBackdrop(DROP_BG)
+    C.BoardBackdrop(row)
     PaintEntryRow(row, entry)
     local denyList = C.GetEffectiveDenyList(entry, preset.denyRules)
     local denyCount = table.getn(denyList)
@@ -991,8 +1007,12 @@ local function RenderEntry(index, entry, y, spawnNumber, x, preset)
         GameTooltip:SetText(name, 1,1,1)
         GameTooltip:AddLine((CLASS_LABELS[classKey] or classKey) .. "  " .. (ROLE_LABELS[entry.role] or entry.role or ""), color[1], color[2], color[3])
         if entry.kind == "player" then
-            GameTooltip:AddLine("You. Stays in this raid group.", 0.95, 0.84, 0.40)
-            GameTooltip:AddLine("Drag to choose your group. Right-click to set role.", 0.8,0.8,0.8)
+            GameTooltip:AddLine("Human player. Uses a plan slot, not a companion hire.", 0.95, 0.84, 0.40)
+            if C.CanRemoveBoardEntry(entry) then
+                GameTooltip:AddLine("X or right-click: remove from this plan only. The live group is unchanged.", 0.8,0.8,0.8)
+            else
+                GameTooltip:AddLine("Current-character slot stays in the plan. Drag to choose group; right-click to set role.", 0.8,0.8,0.8)
+            end
         end
         if C.IsRandomHire(entry) then
             GameTooltip:AddLine(C.TierLabel(entry.tier) .. "  |  Class, spec, race and gender unknown until the server hires it.",0.8,0.8,0.8)
@@ -1085,7 +1105,7 @@ local function RenderEmptySlot(destIndex, y, x, preset)
     row:SetWidth(100); row:SetHeight(28)
     row:SetPoint("TOPLEFT", compositionContent, "TOPLEFT", x, y)
     row:EnableMouse(true)
-    row:SetBackdrop(DROP_BG)
+    C.BoardBackdrop(row)
     row:SetBackdropColor(0.04, 0.05, 0.08, 1.0)
     row:SetBackdropBorderColor(0.22, 0.28, 0.36, 1.0)
     if not row.emptyText then row.emptyText=row:CreateFontString(nil,"OVERLAY","GameFontNormalSmall") end
@@ -1618,6 +1638,9 @@ OpenContextMenu = function(index, anchor, page)
     if not page then
         if entry.kind == "player" then
             AddContext("Role: " .. (ROLE_LABELS[entry.role] or entry.role or "?"), function() OpenContextMenu(index, anchor, "role") end)
+            if C.CanRemoveBoardEntry(entry) then
+                AddContext("Remove from plan", function() CloseContext(); RemoveEntry(index) end)
+            end
             AddContext("Close", CloseContext)
         else
         if entry.kind == "legacy" then
