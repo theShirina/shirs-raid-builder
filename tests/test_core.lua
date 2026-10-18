@@ -550,7 +550,8 @@ assert(C.RememberedCharacterRole(conflictRoles, "Priestone", "priest") == "heale
 local youBoard = C.PadRaidSlots({{kind="normal", account="Alt"}}, 8)
 assert(C.EnsurePlayerSlot(youBoard, "Shir", "warrior", "tank") == 2)
 assert(youBoard[2].kind == "player" and youBoard[2].charName == "Shir")
--- A different verified human never replaces the existing human's row.
+-- A different verified human never replaces a deliberately saved human row.
+youBoard[2].autoPlayerName = nil -- This fixture represents a manual/legacy human.
 assert(C.EnsurePlayerSlot(youBoard, "Longname", "shaman") == 3)
 assert(youBoard[2].charName == "Shir" and youBoard[3].charName == "Longname" and youBoard[3].class == "shaman" and youBoard[3].role == "tank")
 assert(C.EnsurePlayerSlot(youBoard, "Longname", "shaman") == 3)

@@ -6,7 +6,14 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-1.2.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v1.2/ShirsRaidBuilder-1.2.zip) from the [v1.2 release page](https://github.com/theShirina/shirs-raid-builder/releases/tag/v1.2).
+Download [ShirsRaidBuilder-1.3.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v1.3/ShirsRaidBuilder-1.3.zip) from the [v1.3 release page](https://github.com/theShirina/shirs-raid-builder/releases/tag/v1.3).
+
+## What's new in 1.3
+
+### Fixed
+
+- Logging in as another character no longer adds another automatic player row to saved plans.
+- Player rows from older versions have no marker to distinguish automatic entries from deliberate ones. Remove any unwanted old rows once; this update keeps them rather than guessing.
 
 ## What's new in 1.2
 
@@ -67,7 +74,7 @@ Download [ShirsRaidBuilder-1.2.zip](https://github.com/theShirina/shirs-raid-bui
 
 - Built for Microbot WoW 1.12.1 and Interface `11200`
 - Uses Microbot companion, legacy hire, deny, setup, and raid roster commands
-- All accounts in a linked run must use v1.2. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
+- All accounts in a linked run must use v1.3. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
 - Linked hires need an approved link and recent synchronization. Old sidebar snapshots are display-only and do not authorize a run
 - The first link requires the builder to be open on the receiving account. Synchronization runs on login or when you click **Refresh Synchronization**. Opening `/srb` is display-only and does not start synchronization.
 - Accounts that log in close together can now synchronize without waiting for a long timeout.

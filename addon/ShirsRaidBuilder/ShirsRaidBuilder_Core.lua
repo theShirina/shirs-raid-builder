@@ -1206,37 +1206,71 @@ function C.RepairRaidEntries(entries)
     return entries
 end
 
-function C.EnsurePlayerSlot(entries, name, class, role, preferred)
-    if preferred==40 then
-        local slot=C.PlannerPlacePlayer(entries,{}, {name=name,class=class,role=C.Trim(role)~="" and role or nil})
-        C.PadRaidSlots(entries,40); return slot
-    end
-    C.PadRaidSlots(entries, 40)
-    local playerName = C.Trim(name)
-    if playerName == "" then return nil end
-    local found = nil
-    local i
+-- Only rows created for mandatory self carry this exact identity marker.
+-- Older/manual humans are indistinguishable and must never be guessed away.
+function C.RetireAutomaticPlayerSlots(entries, name)
+    local current = string.lower(C.Trim(name))
+    if type(entries) ~= "table" or not C.IsSafeCharacterName(current) then return 0, 0 end
+    local removed, unknown = 0, 0
     for i = 1, 40 do
-        if C.IsPlayerEntry(entries[i]) and string.lower(C.Trim(entries[i].charName))==string.lower(playerName) then
-            if found then
-                entries[i] = {kind="empty"}
-            else
-                found = i
+        local e = entries[i]
+        if C.IsPlayerEntry(e) then
+            local identity = string.lower(C.Trim(e.charName))
+            local automatic = type(e.autoPlayerName) == "string" and e.autoPlayerName == identity and C.IsSafeCharacterName(identity)
+            if identity ~= current then
+                if automatic then entries[i] = {kind="empty"}; removed = removed + 1
+                else unknown = unknown + 1 end
             end
         end
     end
-    if not found then found = C.FirstEmptySlot(entries, 40) end
-    if not found then return nil end
+    return removed, unknown
+end
+
+function C.EnsurePlayerSlot(entries, name, class, role, preferred)
+    local playerName = C.Trim(name)
+    if type(entries) ~= "table" or not C.IsSafeCharacterName(playerName) or not C.RoleAllowedForClass(class, C.NormalizeRoleForClass(class, role)) then
+        return nil, "Current player identity or class is unavailable. The plan was kept."
+    end
+    C.PadRaidSlots(entries, 40)
+    C.RetireAutomaticPlayerSlots(entries, playerName)
+    -- Generated plans retain their human tail when it does not move a companion.
+    -- Stage first: the planner may fail after changing its working table.
+    if preferred == 40 then
+        local staged = C.PlannerCopy(entries)
+        local slot = C.PlannerPlacePlayer(staged, {}, {name=playerName,class=class,role=C.Trim(role)~="" and role or nil})
+        local safe = slot ~= nil
+        for i = 1, 40 do
+            if C.IsFilledEntry(entries[i]) and not C.IsPlayerEntry(entries[i]) and not C.PlannerEqual(entries[i], staged[i]) then safe = false end
+        end
+        if safe then
+            for i = 1, 40 do entries[i] = staged[i] end
+            C.PadRaidSlots(entries, 40)
+            return slot
+        end
+    end
+    local found = nil
+    for i = 1, 40 do
+        local e = entries[i]
+        if C.IsPlayerEntry(e) and string.lower(C.Trim(e.charName)) == string.lower(playerName) then
+            -- A deliberate row takes precedence over a duplicate automatic row.
+            if not found or (entries[found].autoPlayerName and not e.autoPlayerName) then found = i end
+        end
+    end
+    if found then
+        for i = 1, 40 do
+            if i ~= found and C.IsPlayerEntry(entries[i]) and string.lower(C.Trim(entries[i].charName)) == string.lower(playerName) then entries[i] = {kind="empty"} end
+        end
+    else found = C.FirstEmptySlot(entries, 40) end
+    if not found then return nil, "No room for your character: all 40 slots are occupied. Free a slot in this plan; no companion was changed." end
     local previous = entries[found]
+    local entry = C.IsPlayerEntry(previous) and C.PlannerCopy(previous) or {autoPlayerName=string.lower(playerName)}
     local keepRole = C.Trim(role)
-    if keepRole == "" and previous and previous.kind == "player" then keepRole = C.Trim(previous.role) end
-    keepRole = C.NormalizeRoleForClass(class, keepRole)
-    entries[found] = {
-        kind = "player",
-        charName = playerName,
-        class = C.Trim(class),
-        role = keepRole,
-    }
+    if keepRole == "" then keepRole = C.Trim(entry.role) end
+    entry.kind = "player"
+    entry.charName = playerName
+    entry.class = C.Trim(class)
+    entry.role = C.NormalizeRoleForClass(class, keepRole)
+    entries[found] = entry
     return found
 end
 
@@ -5276,11 +5310,12 @@ function C.PlannerPlacePlayer(entries,pinned,player)
     if type(player)~="table" or not C.IsSafeCharacterName(player.name) then return nil,"Current player identity is unavailable." end
     local role=C.NormalizeRoleForClass(player.class,player.role)
     if not C.RoleAllowedForClass(player.class,role) then return nil,"Current player class/role is unavailable." end
+    C.RetireAutomaticPlayerSlots(entries, player.name)
     local previous,oldSlot=nil,nil
     for i=1,40 do
         local e=entries[i]
         if C.IsFilledEntry(e) and (e.kind=="player" or e.kind=="guest") and string.lower(e.charName or e.companionName or "")==string.lower(player.name) then
-            if not previous then previous=C.PlannerCopy(e); oldSlot=i end
+            if not previous or (previous.autoPlayerName and not e.autoPlayerName) then previous=C.PlannerCopy(e); oldSlot=i end
             entries[i]=nil; pinned[i]=nil
         end
     end
@@ -5291,7 +5326,7 @@ function C.PlannerPlacePlayer(entries,pinned,player)
         local e=entries[40]; entries[dest]=e; pinned[dest]=true
         table.insert(notes,"Reserved slot 40 for the current player; moved its fixed occupant to slot "..dest.." in this proposal. Review before saving.")
     end
-    previous=previous or {}
+    previous=previous or {autoPlayerName=string.lower(C.Trim(player.name))}
     previous.kind="player"; previous.charName=player.name; previous.class=player.class
     previous.role=C.NormalizeRoleForClass(player.class,player.role or previous.role)
     entries[40]=previous; pinned[40]=true

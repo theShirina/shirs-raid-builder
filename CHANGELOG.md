@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3
+
+### Fixed
+
+- Logging in as another character no longer adds another automatic player row to saved plans.
+
+Player rows saved by older versions have no marker to distinguish automatic entries from deliberate ones. Remove any unwanted old rows once; this update keeps them rather than guessing.
+
 ## 1.2
 
 ### Added
