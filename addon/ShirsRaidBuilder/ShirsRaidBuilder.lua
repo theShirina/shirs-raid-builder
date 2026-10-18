@@ -1158,7 +1158,8 @@ function RefreshComposition()
             local class = ""
             if type(UnitClass) == "function" then class = C.ClassKeyFromLabel(UnitClass("player")) end
             local role = C.RememberedCharacterRole(DB.characterRoles, you, class)
-            C.EnsurePlayerSlot(preset.entries, you, class, role, preset.plannerPlayerSlot)
+            local slot, reason = C.EnsurePlayerSlot(preset.entries, you, class, role, preset.plannerPlayerSlot)
+            C.ReportPlayerSlot(preset, you, slot, reason)
         end
     end
     local y = -2
@@ -1215,6 +1216,12 @@ function RefreshComposition()
     end
 end
 
+function C.ReportPlayerSlot(preset, name, slot, reason)
+    if slot then C.playerSlotProblem = nil; return end
+    local key = tostring(preset) .. ":" .. tostring(name) .. ":" .. tostring(reason)
+    if C.playerSlotProblem ~= key then Chat(reason or "Your character could not be placed. The plan was kept."); C.playerSlotProblem = key end
+end
+
 local function RememberPlayer()
     if type(UnitName) ~= "function" then return end
     local name = UnitName("player")
@@ -1224,8 +1231,24 @@ local function RememberPlayer()
     if type(UnitFactionGroup) == "function" then RememberFaction(name, UnitFactionGroup("player")) end
     local class = ""
     if type(UnitClass) == "function" then class = C.ClassKeyFromLabel(UnitClass("player")) end
+    local unknown = 0
+    if C.IsSafeCharacterName(name) and C.RoleAllowedForClass(class, C.DefaultRoleForClass(class)) then
+        -- Retire proven automatic self rows even in profiles not opened this login.
+        -- Do not insert the new character into inactive profiles or guess old origins.
+        for _, bank in ipairs({DB.presets, DB.sortPresets}) do
+            for _, saved in pairs(bank) do
+                local _, legacy = C.RetireAutomaticPlayerSlots(type(saved)=="table" and saved.entries or nil, name)
+                unknown = unknown + legacy
+            end
+        end
+    end
+    if unknown > 0 and not C.legacyPlayerNotice then
+        Chat("Saved human entries with no automatic-player history were kept. Remove any unwanted ones with X; companions are unchanged.")
+        C.legacyPlayerNotice = true
+    end
     local preset=EnsureDB()
-    C.EnsurePlayerSlot(preset.entries, name, class, nil, preset.plannerPlayerSlot)
+    local slot, reason = C.EnsurePlayerSlot(preset.entries, name, class, nil, preset.plannerPlayerSlot)
+    C.ReportPlayerSlot(preset, name, slot, reason)
 end
 
 local function IsLevelSixty(name)

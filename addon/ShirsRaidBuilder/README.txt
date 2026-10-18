@@ -1,7 +1,7 @@
-Shir's Raid Builder 1.2
+Shir's Raid Builder 1.3
 
 Built for Microbot WoW 1.12.1.
-Download: https://github.com/theShirina/shirs-raid-builder/releases/download/v1.2/ShirsRaidBuilder-1.2.zip
+Download: https://github.com/theShirina/shirs-raid-builder/releases/download/v1.3/ShirsRaidBuilder-1.3.zip
 
 INSTALL
 1. Close WoW.
@@ -14,9 +14,10 @@ Hiring commands can spend gold. Back up your WTF folder and use Preview before
 Execute. Import replaces the current profile after its overwrite warning.
 Opening /srb is display-only and does not start synchronization.
 Synchronization runs on login or when you click Refresh Synchronization.
-All accounts in a linked run must use v1.2. Accept links only for accounts you trust.
+All accounts in a linked run must use v1.3. Accept links only for accounts you trust.
 Other human-player entries can be removed from a plan without changing the live group.
 The current-character slot stays protected.
+Logging in as another character no longer adds another automatic player row to saved plans. Older player rows have no marker to show whether they were automatic or deliberate; remove any unwanted old rows once. The update keeps them rather than guessing.
 Build Proposal also refreshes selected trusted accounts when needed, then
 checks hire prices without closing the builder. Keep both accounts online
 with the same updated code; a matching version label alone is not enough.
@@ -71,7 +72,7 @@ these are preferences, not damage rankings.
 Execute, Capture and Sort can query the Microbot addon channel, and Sort can
 convert a party to a raid when you are the party leader.
 
-All accounts in a linked run must use v1.0. Accepting a link lets that account
+All accounts in a linked run must use v1.3. Accepting a link lets that account
 hire and spend gold for its plan when the initiating account clicks Execute.
 Accept links only for accounts you trust. Linked hires also need a recent sync
 and the addon loaded on each account. The first link needs the builder open on

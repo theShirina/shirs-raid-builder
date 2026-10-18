@@ -101,6 +101,7 @@ PUBLIC_FILES = {
     "tests/test_quote_rate.lua",
     "tests/test_hire_footer.lua",
     "tests/test_human_remove.lua",
+    "tests/test_login_player.lua",
     "tests/test_board_plan_lifecycle.lua",
     "tests/test_planner_roster.lua",
     "tests/test_planner_priority.lua",
@@ -258,6 +259,23 @@ def main() -> int:
     run([args.luac, "-p", str(ROOT / "tests" / "test_board_plan_lifecycle.lua")])
     lifecycle_output = run([args.lua, str(ROOT / "tests" / "test_board_plan_lifecycle.lua")], cwd=ROOT / "tests")
     assert "board plan lifecycle: PASS" in lifecycle_output
+
+    run([args.luac, "-p", str(ROOT / "tests" / "test_login_player.lua")])
+    login_output = run([args.lua, str(ROOT / "tests" / "test_login_player.lua")], cwd=ROOT / "tests")
+    assert "login player tests: PASS" in login_output
+    with tempfile.TemporaryDirectory(prefix="srb-login-") as temporary:
+        saved = None
+        for index, step in enumerate(("A", "B", "C", "C", "A")):
+            destination = Path(temporary) / ("login-" + str(index) + ".lua")
+            environment = os.environ.copy()
+            environment["SRB_LOGIN_STEP"] = step
+            environment["SRB_LOGIN_WRITE"] = str(destination)
+            if saved is not None:
+                environment["SRB_LOGIN_READ"] = str(saved)
+            output = run([args.lua, str(ROOT / "tests" / "test_login_player.lua")], cwd=ROOT / "tests", env=environment)
+            assert ("fresh login " + step + ": PASS") in output
+            assert destination.is_file(), "login did not serialize its SavedVariable"
+            saved = destination
 
     build_script = ROOT / "scripts" / "build_release.py"
     run([sys.executable, str(build_script)])
