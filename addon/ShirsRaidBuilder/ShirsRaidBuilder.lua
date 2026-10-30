@@ -836,6 +836,11 @@ local function RemoveEntry(index)
     local entry = preset.entries[index]
     if C.CanRemoveBoardEntry(entry) then
         preset.entries[index] = {kind="empty"}
+        -- A detected player stays out of this plan until they leave the group.
+        if type(entry.autoGroupName) == "string" then
+            preset.groupPlayerSkips = preset.groupPlayerSkips or {}
+            preset.groupPlayerSkips[entry.autoGroupName] = true
+        end
         RefreshComposition()
         SetStatus("Removed " .. (entry.account or entry.charName or "entry") .. " from this plan. The live group is unchanged.")
     end
@@ -1008,6 +1013,7 @@ local function RenderEntry(index, entry, y, spawnNumber, x, preset)
         GameTooltip:AddLine((CLASS_LABELS[classKey] or classKey) .. "  " .. (ROLE_LABELS[entry.role] or entry.role or ""), color[1], color[2], color[3])
         if entry.kind == "player" then
             GameTooltip:AddLine("Human player. Uses a plan slot, not a companion hire.", 0.95, 0.84, 0.40)
+            if entry.autoGroupName then GameTooltip:AddLine("Added from your party or raid. Leaves the plan when they leave the group.", 0.8,0.8,0.8) end
             if C.CanRemoveBoardEntry(entry) then
                 GameTooltip:AddLine("X or right-click: remove from this plan only. The live group is unchanged.", 0.8,0.8,0.8)
             else
@@ -1162,6 +1168,7 @@ function RefreshComposition()
             C.ReportPlayerSlot(preset, you, slot, reason)
         end
     end
+    if DB.uiMode ~= "sort" and C.GroupPlayersUpdate then C.GroupPlayersUpdate() end
     local y = -2
     for group = 1, 8 do
         local firstIndex = (group - 1) * 5 + 1
@@ -4477,6 +4484,7 @@ local function HandleCompanionInfoMessage()
     if not valid then return end
     C.latestCompanionList = companions
     C.latestCompanionInfoAt = GetTime and GetTime() or 0
+    C.groupDirty = true
     if (not executing) and (not C.sortWaiting) then return end
     -- A list answering another addon while a hire settles can predate that hire's
     -- companion. The queue asks for its own list once the hire has settled.
@@ -4596,6 +4604,165 @@ if not grinfoFrame then
         if event ~= "CHAT_MSG_ADDON" then return end
         HandleCompanionInfoMessage()
     end)
+end
+
+-- Group players on the Hire board. Reads only the client's own party/raid
+-- cache and the latest GRINFO reply (Core C.ClassifyGroupMembers). Settled
+-- rows change only in empty slots and never during a run, sort or drag.
+function C.ReadGroupRoster()
+    local roster, settled = {}, true
+    local function Add(name, class)
+        if not IsRealCharacterName(name) then settled = false; return end
+        table.insert(roster, {name=name, class=class})
+    end
+    local raid = type(GetNumRaidMembers) == "function" and (GetNumRaidMembers() or 0) or 0
+    if raid > 0 and type(GetRaidRosterInfo) == "function" then
+        for i = 1, raid do
+            local name, _, _, _, class, token = GetRaidRosterInfo(i)
+            Add(name, token or class)
+        end
+    elseif type(GetNumPartyMembers) == "function" and type(UnitName) == "function" then
+        for i = 1, GetNumPartyMembers() or 0 do
+            local class, token
+            if type(UnitClass) == "function" then class, token = UnitClass("party" .. i) end
+            Add(UnitName("party" .. i), token or class)
+        end
+    end
+    return roster, settled
+end
+
+function C.HasDetectedRows(entries)
+    for _, e in pairs(type(entries) == "table" and entries or {}) do
+        if type(e) == "table" and type(e.autoGroupName) == "string" then return true end
+    end
+    return false
+end
+
+-- Returns the active hire plan's change list and the unresolved members, or nil
+-- while a run, sort or drag holds the board; the driver retries then.
+function C.GroupPlayersSync()
+    local you = type(UnitName) == "function" and (UnitName("player") or "") or ""
+    local roster, settled = C.ReadGroupRoster()
+    local now = GetTime and GetTime() or 0
+    local seen, present = C.groupSeen or {}, {}
+    C.groupSeen = seen
+    for _, m in ipairs(roster) do
+        local key = string.lower(m.name)
+        present[key] = true
+        if not seen[key] then seen[key] = now end
+    end
+    -- A member who leaves and rejoins needs fresh evidence again.
+    if settled then for key in pairs(seen) do if not present[key] then seen[key] = nil end end end
+    -- Join times are only observations; plan rows wait until the board is free.
+    if C.QuickHireBusy() or C.sortWaiting or dragSourceIndex then C.groupDirty = true; return nil end
+    local players, companions, ambiguous = C.ClassifyGroupMembers(roster, you, {list=C.latestCompanionList, at=C.latestCompanionInfoAt}, seen)
+    settled = settled and C.groupRosterReady == true
+    local bank, current = C.PresetBank(DB, "hire")
+    local result = {added={}, removed={}, full={}}
+    for name, preset in pairs(bank) do
+        if type(preset) == "table" and type(preset.entries) == "table" and (name == current or C.HasDetectedRows(preset.entries)) then
+            local r = C.SyncGroupPlayers(preset.entries, name == current and players or {}, companions, present, you, settled, preset.groupPlayerSkips, DB.characterRoles)
+            if type(preset.groupPlayerSkips) == "table" and next(preset.groupPlayerSkips) == nil then preset.groupPlayerSkips = nil end
+            if name == current then result = r end
+        end
+    end
+    C.groupDirty = nil
+    return result, ambiguous
+end
+
+function C.ReportGroupPlayers(result, ambiguous)
+    if table.getn(result.added) > 0 then
+        local text = "Added " .. table.concat(result.added, ", ") .. " from your group to a free plan slot."
+        Chat(text, true)
+        if DB.uiMode ~= "sort" then SetStatus(text) end
+    end
+    if table.getn(result.removed) > 0 then
+        Chat("Removed " .. table.concat(result.removed, ", ") .. " from the plan: no longer in your group.", true)
+    end
+    local full = table.concat(result.full, ", ")
+    local key = full ~= "" and (tostring(DB.currentPreset) .. ":" .. full) or nil
+    if key and C.groupFullNote ~= key then
+        Chat("Plan full: " .. full .. " (in your group) was not added. No companion was moved or replaced.")
+        if DB.uiMode ~= "sort" then SetStatus("Plan full: no free slot for " .. full .. ".") end
+    end
+    C.groupFullNote = key
+    local unclear, waiting = {}, {}
+    for _, a in ipairs(ambiguous or {}) do
+        if a.reason == "unclear" then table.insert(unclear, a.name) elseif a.reason == "wait" then table.insert(waiting, a.name) end
+    end
+    C.groupWaiting = waiting
+    if table.getn(waiting) == 0 then C.groupAsk = nil end
+    local note = table.concat(unclear, ", ")
+    if note ~= "" and C.groupUnclearNote ~= note then
+        Chat("Not added: " .. note .. ". The server's companion list cannot confirm a human player, so the plan was left unchanged.")
+    end
+    C.groupUnclearNote = note ~= "" and note or nil
+end
+
+function C.GroupPlayersUpdate()
+    local result, ambiguous = C.GroupPlayersSync()
+    if result then C.ReportGroupPlayers(result, ambiguous) end
+    return result
+end
+
+-- One GRINFO request per unresolved set once every member has been in the group
+-- for the margin, one retry after 15 s, then a visible note. Only while the
+-- Hire board is open, only after a roster event or opening the board, and
+-- never during a run (GroupPlayersSync holds then).
+function C.AskGroupInfo(now)
+    local waiting = C.groupWaiting
+    if not C.groupAskArmed or type(waiting) ~= "table" or table.getn(waiting) == 0 or type(SendAddonMessage) ~= "function" then return false end
+    local keys, due = {}, 0
+    for _, name in ipairs(waiting) do
+        local lower = string.lower(name)
+        table.insert(keys, lower)
+        due = math.max(due, (C.groupSeen and C.groupSeen[lower] or now) + C.GROUP_INFO_MARGIN)
+    end
+    if now < due then return false end
+    local key, ask = table.concat(keys, ","), C.groupAsk
+    if ask and ask.key == key then
+        if ask.count >= 2 then
+            if now - ask.at >= 10 and not ask.reported then
+                ask.reported = true
+                Chat("Not added: " .. table.concat(waiting, ", ") .. ". No fresh companion list came from the server, so they could not be confirmed as players. Reopen the planner to try again.")
+            end
+            return false
+        end
+        if now - ask.at < 15 then return false end
+        ask.count = ask.count + 1; ask.at = now
+    else
+        C.groupAsk = {key=key, count=1, at=now}
+    end
+    SendAddonMessage("nexus", "GRINFO:ALL:FULL", "BATTLEGROUND")
+    return true
+end
+
+function C.GroupPlayersTick()
+    local now = GetTime and GetTime() or 0
+    if now < (C.groupNextTick or 0) then return end
+    C.groupNextTick = now + 0.5
+    if not C.groupRosterReady and C.groupReadyAt and now >= C.groupReadyAt then C.groupRosterReady = true; C.groupDirty = true end
+    local visible = mainFrame and mainFrame:IsShown() and DB.uiMode ~= "sort"
+    if visible and not C.groupShown and C.groupRosterReady then C.groupAskArmed = true end
+    C.groupShown = visible
+    if C.groupDirty then
+        if visible and not dragSourceIndex then RefreshComposition() else C.GroupPlayersUpdate() end
+    end
+    if visible and not C.groupDirty then C.AskGroupInfo(now) end
+end
+
+if not C.groupFrame then
+    C.groupFrame = CreateFrame("Frame")
+    for _, name in ipairs({"PARTY_MEMBERS_CHANGED", "RAID_ROSTER_UPDATE", "PLAYER_ENTERING_WORLD"}) do C.groupFrame:RegisterEvent(name) end
+    C.groupFrame:SetScript("OnEvent", function()
+        -- Before the first roster event a login roster can still be empty, so
+        -- detected rows are not retired until it arrives or 5 s pass.
+        if event == "PLAYER_ENTERING_WORLD" then
+            if not C.groupRosterReady then C.groupReadyAt = (GetTime and GetTime() or 0) + 5 end
+        else C.groupRosterReady = true; C.groupAskArmed = true end
+        C.groupDirty = true
+    end)
+    C.groupFrame:SetScript("OnUpdate", function() C.GroupPlayersTick() end)
 end
 
 local function SendQueueEntry(entry)

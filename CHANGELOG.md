@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4
+
+### Added
+
+- Confirmed human players in your party or raid are added to the plan automatically, with departing players removed from the live roster.
+
+### Fixed
+
+- Refreshing a generated plan no longer moves a manually placed human player to another slot.
+
 ## 1.3
 
 ### Fixed

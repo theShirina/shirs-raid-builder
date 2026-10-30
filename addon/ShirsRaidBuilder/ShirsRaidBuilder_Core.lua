@@ -1219,7 +1219,7 @@ function C.RetireAutomaticPlayerSlots(entries, name)
             local automatic = type(e.autoPlayerName) == "string" and e.autoPlayerName == identity and C.IsSafeCharacterName(identity)
             if identity ~= current then
                 if automatic then entries[i] = {kind="empty"}; removed = removed + 1
-                else unknown = unknown + 1 end
+                elseif type(e.autoGroupName) ~= "string" then unknown = unknown + 1 end
             end
         end
     end
@@ -1233,21 +1233,6 @@ function C.EnsurePlayerSlot(entries, name, class, role, preferred)
     end
     C.PadRaidSlots(entries, 40)
     C.RetireAutomaticPlayerSlots(entries, playerName)
-    -- Generated plans retain their human tail when it does not move a companion.
-    -- Stage first: the planner may fail after changing its working table.
-    if preferred == 40 then
-        local staged = C.PlannerCopy(entries)
-        local slot = C.PlannerPlacePlayer(staged, {}, {name=playerName,class=class,role=C.Trim(role)~="" and role or nil})
-        local safe = slot ~= nil
-        for i = 1, 40 do
-            if C.IsFilledEntry(entries[i]) and not C.IsPlayerEntry(entries[i]) and not C.PlannerEqual(entries[i], staged[i]) then safe = false end
-        end
-        if safe then
-            for i = 1, 40 do entries[i] = staged[i] end
-            C.PadRaidSlots(entries, 40)
-            return slot
-        end
-    end
     local found = nil
     for i = 1, 40 do
         local e = entries[i]
@@ -1256,13 +1241,25 @@ function C.EnsurePlayerSlot(entries, name, class, role, preferred)
             if not found or (entries[found].autoPlayerName and not e.autoPlayerName) then found = i end
         end
     end
-    if found then
-        for i = 1, 40 do
-            if i ~= found and C.IsPlayerEntry(entries[i]) and string.lower(C.Trim(entries[i].charName)) == string.lower(playerName) then entries[i] = {kind="empty"} end
+    local previous = found and entries[found] or nil
+    for i = 1, 40 do
+        if i ~= found and C.IsPlayerEntry(entries[i]) and string.lower(C.Trim(entries[i].charName)) == string.lower(playerName) then entries[i] = {kind="empty"} end
+    end
+    -- Generated plans keep the current character in slot 40. Only a human
+    -- already at 40 moves for it, into your old slot; companions and every
+    -- other human keep the slot the user gave them.
+    if preferred == 40 and found ~= 40 then
+        local occupant = entries[40]
+        local back = found
+        if C.IsPlayerEntry(occupant) and not back then back = C.FirstEmptySlot(entries, 39) end
+        if not C.IsFilledEntry(occupant) or (C.IsPlayerEntry(occupant) and back) then
+            if found then entries[found] = {kind="empty"} end
+            if C.IsFilledEntry(occupant) then entries[back] = occupant end
+            found = 40
         end
-    else found = C.FirstEmptySlot(entries, 40) end
+    end
+    if not found then found = C.FirstEmptySlot(entries, 40) end
     if not found then return nil, "No room for your character: all 40 slots are occupied. Free a slot in this plan; no companion was changed." end
-    local previous = entries[found]
     local entry = C.IsPlayerEntry(previous) and C.PlannerCopy(previous) or {autoPlayerName=string.lower(playerName)}
     local keepRole = C.Trim(role)
     if keepRole == "" then keepRole = C.Trim(entry.role) end
@@ -1296,6 +1293,133 @@ function C.FirstEmptySlot(entries, size)
         if not C.IsFilledEntry(entries[i]) then return i end
     end
     return nil
+end
+
+-- Group players. A member is a confirmed human only on evidence: the owner of a
+-- listed companion, or absent from a GRINFO:ALL:FULL list received at least
+-- GROUP_INFO_MARGIN seconds after the client first showed them in the group.
+-- GRINFO lists hired companions only; legacy companions carry a "-lite" name.
+C.GROUP_INFO_MARGIN = 3
+
+-- New units read "Unknown" until the client or server has their name.
+function C.IsKnownGroupName(name)
+    local key = string.lower(C.Trim(name))
+    return C.IsSafeCharacterName(key) and key ~= "unknown" and key ~= "unknow"
+end
+
+-- roster: {name=, class=} rows from the client's party/raid cache. info:
+-- {list=parsed GRINFO or nil, at=receive time}. seen: lower name -> first seen.
+-- Returns players, companions (lower name -> true) and ambiguous {name=,reason=}.
+-- Reason "wait" means a newer list can settle it; "unclear" means it cannot.
+function C.ClassifyGroupMembers(roster, selfName, info, seen)
+    local players, companions, ambiguous = {}, {}, {}
+    local me = string.lower(C.Trim(selfName))
+    local listed, owners, unknown = {}, {}, false
+    local list = type(info) == "table" and type(info.list) == "table" and info.list or nil
+    if list then
+        for i = 1, table.getn(list) do
+            local record = list[i]
+            local name = string.lower(C.Trim(record and record.name))
+            if C.IsKnownGroupName(name) or (string.find(name, "-", 1, true) and name ~= "-") then listed[name] = true else unknown = true end
+            local owner = string.lower(C.Trim(record and record.owner))
+            if C.IsKnownGroupName(owner) then owners[owner] = true end
+        end
+    end
+    for _, member in ipairs(type(roster) == "table" and roster or {}) do
+        local name = C.Trim(member.name)
+        local key = string.lower(name)
+        if key ~= "" and key ~= me then
+            local class = C.ClassKeyFromLabel(member.class)
+            if listed[key] or string.find(key, "-", 1, true) then
+                companions[key] = true
+            elseif not C.IsKnownGroupName(name) then
+                table.insert(ambiguous, {name=name, reason="unclear"})
+            elseif not C.RoleAllowedForClass(class, C.DefaultRoleForClass(class)) then
+                table.insert(ambiguous, {name=name, reason="class"})
+            elseif owners[key] then
+                table.insert(players, {name=name, class=class})
+            elseif not list then
+                table.insert(ambiguous, {name=name, reason="wait"})
+            elseif unknown then
+                table.insert(ambiguous, {name=name, reason="unclear"})
+            elseif (tonumber(info.at) or 0) < (tonumber(type(seen) == "table" and seen[key]) or 0) + C.GROUP_INFO_MARGIN then
+                table.insert(ambiguous, {name=name, reason="wait"})
+            else
+                table.insert(players, {name=name, class=class})
+            end
+        end
+    end
+    table.sort(players, function(a, b) return string.lower(a.name) < string.lower(b.name) end)
+    table.sort(ambiguous, function(a, b) return string.lower(a.name) < string.lower(b.name) end)
+    return players, companions, ambiguous
+end
+
+-- The highest empty slot: detected humans fill the raid tail, like the builder's
+-- human reservation, and leave the head of the board to companions.
+function C.LastEmptySlot(entries, size)
+    if type(entries) ~= "table" then return nil end
+    for i = size or 40, 1, -1 do
+        if not C.IsFilledEntry(entries[i]) then return i end
+    end
+    return nil
+end
+
+-- A plan row that already names this character, other than one detected row.
+function C.BoardNamesCharacter(entries, key, except)
+    for i = 1, 40 do
+        local e = entries[i]
+        if i ~= except and C.IsFilledEntry(e) then
+            if (e.kind == "player" or e.kind == "guest") and (string.lower(C.Trim(e.charName)) == key or string.lower(C.Trim(e.companionName)) == key) then return true end
+            if e.kind == "normal" and string.lower(C.Trim(e.companionName)) == key then return true end
+        end
+    end
+    return false
+end
+
+-- Detected rows carry autoGroupName. Only those are added or retired here:
+-- manual humans, the current-self row and every companion keep their slot.
+-- present: lower name -> true for the whole live group. settled: the roster is
+-- complete enough to retire rows of people who left. skips: lower names the
+-- user removed from this plan while they stayed in the group.
+-- Returns {added={names}, removed={names}, full={names}}.
+function C.SyncGroupPlayers(entries, players, companions, present, selfName, settled, skips, roles)
+    local result = {added={}, removed={}, full={}}
+    if type(entries) ~= "table" then return result end
+    C.PadRaidSlots(entries, 40)
+    local me = string.lower(C.Trim(selfName))
+    present = type(present) == "table" and present or {}
+    companions = type(companions) == "table" and companions or {}
+    for i = 1, 40 do
+        local e = entries[i]
+        if C.IsPlayerEntry(e) and type(e.autoGroupName) == "string" then
+            local key = string.lower(C.Trim(e.charName))
+            if e.autoGroupName ~= key then
+                e.autoGroupName = nil -- Not ours any more; treat it as deliberate.
+            elseif key == me then
+                -- Logged in as this character: the mandatory-self policy owns it.
+                e.autoGroupName = nil; e.autoPlayerName = key
+            elseif (settled and not present[key]) or companions[key] or C.BoardNamesCharacter(entries, key, i) then
+                entries[i] = {kind="empty"}
+                table.insert(result.removed, e.charName)
+            end
+        end
+    end
+    if settled and type(skips) == "table" then
+        for key in pairs(skips) do if not present[key] then skips[key] = nil end end
+    end
+    for _, p in ipairs(type(players) == "table" and players or {}) do
+        local key = string.lower(C.Trim(p.name))
+        if key ~= me and present[key] and not companions[key] and not (type(skips) == "table" and skips[key]) and not C.BoardNamesCharacter(entries, key) then
+            local slot = C.LastEmptySlot(entries, 40)
+            if slot then
+                entries[slot] = {kind="player", charName=p.name, class=p.class, role=C.RememberedCharacterRole(roles, p.name, p.class), autoGroupName=key}
+                table.insert(result.added, p.name)
+            else
+                table.insert(result.full, p.name)
+            end
+        end
+    end
+    return result
 end
 
 function C.SwapRaidSlots(entries, fromIndex, toIndex)

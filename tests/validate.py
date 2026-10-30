@@ -101,6 +101,7 @@ PUBLIC_FILES = {
     "tests/test_quote_rate.lua",
     "tests/test_hire_footer.lua",
     "tests/test_human_remove.lua",
+    "tests/test_group_players.lua",
     "tests/test_login_player.lua",
     "tests/test_board_plan_lifecycle.lua",
     "tests/test_planner_roster.lua",
@@ -246,7 +247,7 @@ def main() -> int:
         output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
         assert "tests: PASS" in output, case
 
-    for case in ("test_pricing_bounds.lua", "test_native_review.lua", "test_ultra_priority.lua", "test_ultra_global.lua", "test_save_plan.lua", "test_price_persistence.lua", "test_quote_rate.lua", "test_hire_footer.lua", "test_human_remove.lua"):
+    for case in ("test_pricing_bounds.lua", "test_native_review.lua", "test_ultra_priority.lua", "test_ultra_global.lua", "test_save_plan.lua", "test_price_persistence.lua", "test_quote_rate.lua", "test_hire_footer.lua", "test_human_remove.lua", "test_group_players.lua"):
         run([args.luac, "-p", str(ROOT / "tests" / case)])
         output = run([args.lua, str(ROOT / "tests" / case)], cwd=ROOT / "tests")
         assert "tests: PASS" in output, case

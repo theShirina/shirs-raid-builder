@@ -6,7 +6,17 @@ Shir's Raid Builder creates, saves, and runs Microbot raid hiring plans for WoW 
 
 ## Download
 
-Download [ShirsRaidBuilder-1.3.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v1.3/ShirsRaidBuilder-1.3.zip) from the [v1.3 release page](https://github.com/theShirina/shirs-raid-builder/releases/tag/v1.3).
+Download [ShirsRaidBuilder-1.4.zip](https://github.com/theShirina/shirs-raid-builder/releases/download/v1.4/ShirsRaidBuilder-1.4.zip) from the [v1.4 release page](https://github.com/theShirina/shirs-raid-builder/releases/tag/v1.4).
+
+## What's new in 1.4
+
+### Added
+
+- Confirmed human players in your party or raid are added to the plan automatically, with departing players removed from the live roster.
+
+### Fixed
+
+- Refreshing a generated plan no longer moves a manually placed human player to another slot.
 
 ## What's new in 1.3
 
@@ -74,7 +84,7 @@ Download [ShirsRaidBuilder-1.3.zip](https://github.com/theShirina/shirs-raid-bui
 
 - Built for Microbot WoW 1.12.1 and Interface `11200`
 - Uses Microbot companion, legacy hire, deny, setup, and raid roster commands
-- All accounts in a linked run must use v1.3. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
+- All accounts in a linked run must use v1.4. Accepting a link lets that account hire and spend gold for its plan when the initiating account clicks **Execute**; accept links only for accounts you trust
 - Linked hires need an approved link and recent synchronization. Old sidebar snapshots are display-only and do not authorize a run
 - The first link requires the builder to be open on the receiving account. Synchronization runs on login or when you click **Refresh Synchronization**. Opening `/srb` is display-only and does not start synchronization.
 - Accounts that log in close together can now synchronize without waiting for a long timeout.
@@ -83,7 +93,7 @@ Download [ShirsRaidBuilder-1.3.zip](https://github.com/theShirina/shirs-raid-bui
 - Hiring can cost gold; the addon cannot refund a command that the server accepts
 - Execute, Capture, and Sort can query Microbot's `nexus` addon channel for live companion owner, class, and role data
 - Starting Sort while leading a party can convert that party into a raid before moving members
-- Other players in linked accounts take up live raid slots but are not added to your plan automatically; leave room for them. Ten players leave 30 slots for companions
+- Confirmed human players in your party or raid appear in the plan automatically and use raid slots; leave room for them. Ten players leave 30 slots for companions
 - Run profile names allow letters, numbers, spaces, `_`, apostrophes, and hyphens, up to 48 characters
 - The server may report a companion's owner as the character that sent the hire. Re-runs match by the hire-from character, so check the board before running a plan again
 - Stop on the main builder ends local hiring, whispers, sorting and unsent linked hand-offs. A group already delivered to another account must be stopped there too

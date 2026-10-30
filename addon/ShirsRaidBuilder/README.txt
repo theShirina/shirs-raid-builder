@@ -1,7 +1,12 @@
-Shir's Raid Builder 1.3
+Shir's Raid Builder 1.4
 
 Built for Microbot WoW 1.12.1.
-Download: https://github.com/theShirina/shirs-raid-builder/releases/download/v1.3/ShirsRaidBuilder-1.3.zip
+Download: https://github.com/theShirina/shirs-raid-builder/releases/download/v1.4/ShirsRaidBuilder-1.4.zip
+
+WHAT'S NEW IN 1.4
+Confirmed human players in your party or raid are added to the plan
+automatically, and departing players are removed from the live roster.
+Refreshing a generated plan now preserves manually placed human slots.
 
 INSTALL
 1. Close WoW.
@@ -14,7 +19,7 @@ Hiring commands can spend gold. Back up your WTF folder and use Preview before
 Execute. Import replaces the current profile after its overwrite warning.
 Opening /srb is display-only and does not start synchronization.
 Synchronization runs on login or when you click Refresh Synchronization.
-All accounts in a linked run must use v1.3. Accept links only for accounts you trust.
+All accounts in a linked run must use v1.4. Accept links only for accounts you trust.
 Other human-player entries can be removed from a plan without changing the live group.
 The current-character slot stays protected.
 Logging in as another character no longer adds another automatic player row to saved plans. Older player rows have no marker to show whether they were automatic or deliberate; remove any unwanted old rows once. The update keeps them rather than guessing.
@@ -87,8 +92,8 @@ the same read-only status. The initiating plan's rules apply to linked hires.
 Later hand-offs are shorter than the first, so linked runs send fewer messages.
 
 Saved raid snapshots come from Microbot Control Panel; enable it on each
-character. Other accounts' players use raid slots but are not board cards.
-Leave room for them: ten players leave 30 slots for companions. Each hiring
+character. Confirmed human players in your party or raid are added to the plan
+automatically and use raid slots. Leave room for them: ten players leave 30 slots for companions. Each hiring
 character can have at most four normal hires per plan.
 
 The server may report a companion's owner as the character that sent the

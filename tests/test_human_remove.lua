@@ -186,10 +186,13 @@ test('human-tail repaint preserves every remaining identity and companion metada
  assert(hires==38 and p.entries[40].charName=='Tester','current player cap/queue boundary changed');check()
 end)
 
-test('several human tail rows remain individually removable after tail compaction',function()
+test('several placed human rows stay put and remain individually removable',function()
  local h=fixture(39);local p=h:preset()
  for i=1,5 do p.entries[i]={kind='player',charName='Human'..string.char(64+i),class='mage',role='rdps'}end
- h.env.RefreshComposition();local row=card(h,38);local target=row.boardEntry.charName;local stale=h:button(row,'X'):GetScript('OnClick')
+ h.env.RefreshComposition()
+ for i=1,5 do assert(p.entries[i].charName=='Human'..string.char(64+i),'refresh moved a placed human from slot '..i)end
+ assert(p.entries[39].charName=='Visitor'and p.entries[40].charName=='Tester','tail humans moved')
+ local row=card(h,3);local target=row.boardEntry.charName;local stale=h:button(row,'X'):GetScript('OnClick')
  h:click(h:button(row,'X'));absent(h,target)
  local before=h.C.PlannerCopy(p);stale();assert(h.C.PlannerEqual(before,p),'old tail handler deleted newly shifted human')
  assert(h.C.FilledCount(p.entries)==6 and p.entries[40].charName=='Tester','other human identities were dropped')
